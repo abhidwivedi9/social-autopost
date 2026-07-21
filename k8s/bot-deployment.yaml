@@ -1,0 +1,36 @@
+# The bot needs to stay running (long-poll to Telegram + internal cron schedule),
+# so it's a Deployment, not a CronJob. Replaces the need for the 5 separate CronJobs
+# in cronjobs.yaml — this single pod handles all 5 daily prompts itself.
+#
+# IMAGE: same image as before, just a different container command.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: social-autopost-bot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: social-autopost-bot
+  template:
+    metadata:
+      labels:
+        app: social-autopost-bot
+    spec:
+      imagePullSecrets:
+        - name: gitlab-registry-secret
+      containers:
+        - name: bot
+          image: IMAGE_PLACEHOLDER
+          command: ["node", "src/bot.js"]
+          envFrom:
+            - secretRef:
+                name: social-autopost-secrets
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"

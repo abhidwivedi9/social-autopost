@@ -1,0 +1,135 @@
+# 5 CronJobs, one per daily slot. Times are IST (Asia/Kolkata) using K8s CronJob's
+# native timeZone field (GA since k8s 1.27 — GKE Autopilot supports this).
+#
+# IMAGE: replace `IMAGE_PLACEHOLDER` with your built image, e.g.
+#   asia-south1-docker.pkg.dev/terraform-gke-learning/social-autopost/poster:latest
+# (build it the same way as your existing GitLab CI -> GKE Autopilot pipeline,
+#  and reuse the imagePullSecrets: gitlab-registry-secret fix from that pipeline.)
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: autopost-6am-ai-tech
+spec:
+  schedule: "0 6 * * *"
+  timeZone: "Asia/Kolkata"
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          imagePullSecrets:
+            - name: gitlab-registry-secret
+          containers:
+            - name: poster
+              image: IMAGE_PLACEHOLDER
+              env:
+                - name: SLOT
+                  value: "6am"
+              envFrom:
+                - secretRef:
+                    name: social-autopost-secrets
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: autopost-9am-career
+spec:
+  schedule: "0 9 * * *"
+  timeZone: "Asia/Kolkata"
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          imagePullSecrets:
+            - name: gitlab-registry-secret
+          containers:
+            - name: poster
+              image: IMAGE_PLACEHOLDER
+              env:
+                - name: SLOT
+                  value: "9am"
+              envFrom:
+                - secretRef:
+                    name: social-autopost-secrets
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: autopost-1pm-startup
+spec:
+  schedule: "0 13 * * *"
+  timeZone: "Asia/Kolkata"
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          imagePullSecrets:
+            - name: gitlab-registry-secret
+          containers:
+            - name: poster
+              image: IMAGE_PLACEHOLDER
+              env:
+                - name: SLOT
+                  value: "1pm"
+              envFrom:
+                - secretRef:
+                    name: social-autopost-secrets
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: autopost-5pm-gaming
+spec:
+  schedule: "0 17 * * *"
+  timeZone: "Asia/Kolkata"
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          imagePullSecrets:
+            - name: gitlab-registry-secret
+          containers:
+            - name: poster
+              image: IMAGE_PLACEHOLDER
+              env:
+                - name: SLOT
+                  value: "5pm"
+              envFrom:
+                - secretRef:
+                    name: social-autopost-secrets
+---
+# NOTE: this slot is "review required" in the code — it will generate and log
+# the post but will NOT auto-publish. Check job logs, or wire up a Slack/Telegram
+# webhook in src/index.js to get pinged instead of checking logs manually.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: autopost-9pm-gaming-policy-REVIEW
+spec:
+  schedule: "0 21 * * *"
+  timeZone: "Asia/Kolkata"
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          imagePullSecrets:
+            - name: gitlab-registry-secret
+          containers:
+            - name: poster
+              image: IMAGE_PLACEHOLDER
+              env:
+                - name: SLOT
+                  value: "9pm"
+              envFrom:
+                - secretRef:
+                    name: social-autopost-secrets
