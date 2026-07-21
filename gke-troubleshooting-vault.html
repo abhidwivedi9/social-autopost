@@ -170,6 +170,16 @@
   .refcmd .rdesc{font-size:14px;font-weight:600;margin:12px 0 8px;color:var(--text)}
   .refcmd .rparts{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:7px;line-height:1.7}
   .refcmd .rparts b{color:var(--kube);font-weight:600}
+  .rusernote{margin-top:8px}
+  .run-display{font-family:var(--mono);font-size:11.5px;color:var(--text);background:var(--code-bg);border:1px solid var(--border-soft);border-radius:6px;padding:8px 10px;display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap}
+  .run-label{color:var(--kube);font-weight:600;flex:0 0 auto}
+  .run-text{flex:1;white-space:pre-wrap;word-break:break-word}
+  .run-display .linkbtn{flex:0 0 auto}
+  .add-note-btn{color:var(--muted-2);font-family:var(--mono);font-size:11px;background:none;border:1px dashed var(--border);border-radius:6px;padding:5px 9px;cursor:pointer}
+  .add-note-btn:hover{color:var(--kube);border-color:var(--kube)}
+  .runinput{width:100%;background:var(--code-bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;font-family:var(--mono);font-size:12px;min-height:56px;resize:vertical;outline:none}
+  .runinput:focus{border-color:var(--kube)}
+  .runactions{display:flex;gap:8px;margin-top:6px}
 
   /* my notes tab */
   .mynote{background:var(--panel);border:1px solid var(--border-soft);border-left:3px solid var(--kube);border-radius:11px;margin-bottom:11px;overflow:hidden}
@@ -271,7 +281,8 @@
 
   <div class="viewtabs" id="viewTabs">
     <button class="vtab on" data-view="drills">🩺 Troubleshooting Drills</button>
-    <button class="vtab" data-view="ref">📖 GKE Command Reference</button>
+    <button class="vtab" data-view="gke">☁️ GKE Commands</button>
+    <button class="vtab" data-view="kubectl">⚙️ kubectl Commands</button>
     <button class="vtab" data-view="notes">🗒️ My Notes</button>
   </div>
 
@@ -294,6 +305,8 @@
   </div>
 
   <div id="refView" style="display:none"></div>
+
+  <div id="kubectlView" style="display:none"></div>
 
   <div id="notesView" style="display:none"></div>
 
@@ -356,7 +369,7 @@
 <script>
 (function(){
   "use strict";
-  const LS_KEY="gke_vault_v7";
+  const LS_KEY="gke_vault_v8";
 
   // ============ SEED ============
   const SEED=[
@@ -501,70 +514,129 @@
           {label:"Cleanup", code:"kubectl delete namespace drill"}
         ]
       }]
+    },
+    {
+      id:"t-network", name:"Service & Networking",
+      desc:"Pods are healthy — Running, 0 restarts — but traffic still fails. The problem lives between the Service and its endpoints: readiness gating, selectors, load-balancing. Nothing crashes, so logs look clean; the answer is in endpoints + Events, not logs.",
+      notes:
+"KEY IDEA — a pod can be Running, 0 restarts, and STILL be pulled out of traffic. Readiness != Liveness:\n"+
+"  • livenessProbe fails  -> kubelet KILLS & restarts the container (RESTARTS climb, Exit 137)\n"+
+"  • readinessProbe fails -> pod marked NotReady, its IP is REMOVED from the Service endpoints;\n"+
+"    the container is NOT restarted. No crash, no restart — just silent traffic loss.\n\n"+
+"THE TELL: READY column flaps 1/1 <-> 0/1 while RESTARTS stays 0. Then go read the Service's endpoints.\n\n"+
+"COMMON INTERVIEW Qs\n"+
+"Q: Pods are Running with 0 restarts but users get intermittent 502s — where do you look?\n"+
+"A: The Service's endpoints/endpointslices. Flapping readiness silently removes pod IPs from LB rotation.\n\n"+
+"Q: Difference between liveness and readiness probes?\n"+
+"A: Liveness = 'is it alive?' fail -> restart. Readiness = 'can it serve?' fail -> remove from Service\n"+
+"   endpoints, no restart. startupProbe gates both during boot.\n\n"+
+"Q: A Service exists and pods are Running, but 'kubectl get endpoints' is empty — why?\n"+
+"A: No READY pods match the selector — either readiness is failing, or the selector/labels don't match.\n\n"+
+"Q: Why is coupling readiness to a downstream DB check dangerous?\n"+
+"A: A momentary DB latency spike makes readiness fail -> pods drop out of LB -> cascading traffic loss,\n"+
+"   even though the app itself is fine. Keep readiness shallow; cache downstream health.\n\n"+
+"--- paste your own points / questions from other sites below this line ---\n",
+      problems:[{
+        id:"p-net-1", title:"Healthy pods, but users get intermittent 502s — flaky readiness", difficulty:"hard",
+        tags:["readiness-probe","endpoints","service","networking","load-balancing"],
+        symptom:"The 'checkout' service in drill is up — all pods Running, RESTARTS 0, no CrashLoop. But users hit intermittent 502s / connection resets. Sometimes checkout works, sometimes it doesn't. 'kubectl get pods' looks totally healthy. On-call is stumped because nothing is obviously broken.",
+        hint:"Watch the READY column, not RESTARTS — it flickers 1/1 <-> 0/1. The container is never killed, so this is NOT a crash or a liveness kill. Go look at what the Service actually has as backends.",
+        diagnosis:"get pods -w -> READY flaps 1/1 <-> 0/1, RESTARTS stays 0, no CrashLoop. get endpointslices -> the ready-address list shrinks and grows; pods intermittently land in notReadyAddresses. describe pod -> Events show 'Readiness probe failed' repeatedly, but NO 'Liveness probe failed', NO 'Killing', RESTARTS 0. The readinessProbe is tight (timeoutSeconds=1, periodSeconds=2, failureThreshold=1) and /ready synchronously pings a downstream DB whose p99 occasionally exceeds the timeout.",
+        rootCause:"The readiness probe is too aggressive AND coupled to a slow dependency. On each transient slow /ready response, kubelet marks the pod NotReady -> the endpoint controller yanks that pod's IP out of the Service's EndpointSlice -> the Service now has fewer (sometimes zero) backends -> intermittent 5xx. Because it's READINESS not LIVENESS, the container is never restarted, so all the usual 'unhealthy pod' tells (restarts, CrashLoop) are absent. That's why it's silent.",
+        fix:"Loosen the probe so one blip doesn't flip readiness (raise timeoutSeconds, periodSeconds, and especially failureThreshold). Make /ready a SHALLOW self-check, not coupled to a slow downstream (or cache the downstream health result). Keep liveness ('process alive') and readiness ('can serve') as separate endpoints. Add a PodDisruptionBudget so you always retain healthy backends.",
+        mental:"Contrast with the liveness drill: liveness fail KILLS & restarts (RESTARTS climb, Exit 137); readiness fail NEVER restarts — it silently evicts the pod from load balancing. Same probe family, opposite failure signature. Healthy pods + intermittent 5xx = go straight to endpoints, not logs.",
+        commands:[
+          {label:"Setup (break it)", code:"kubectl create namespace drill\n# checkout readinessProbe: timeoutSeconds=1, periodSeconds=2, failureThreshold=1\n# /ready synchronously pings a slow DB whose p99 sometimes exceeds 1s"},
+          {label:"Diagnose", code:"kubectl get pods -n drill -l app=checkout -w                                  # READY flaps 1/1 <-> 0/1, RESTARTS stays 0\nkubectl get endpointslices -n drill -l kubernetes.io/service-name=checkout    # ready addresses shrink/grow\nkubectl get endpoints checkout -n drill                                       # backend list intermittently empty -> 502s\nkubectl describe pod -n drill -l app=checkout                                 # Events: 'Readiness probe failed' — but NO Killing, RESTARTS 0"},
+          {label:"Fix (quick patch)", code:"kubectl patch deployment checkout -n drill --type=json -p='[\n  {\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/readinessProbe/timeoutSeconds\",\"value\":5},\n  {\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/readinessProbe/periodSeconds\",\"value\":10},\n  {\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/readinessProbe/failureThreshold\",\"value\":3}\n]'\nkubectl rollout status -n drill deployment/checkout\nkubectl get pods -n drill -l app=checkout                                     # READY stable 1/1, no flapping"},
+          {label:"Fix (proper)", code:"# make /ready a SHALLOW check (can the process serve?) — do NOT couple it to a slow downstream\n# if downstream health is truly required, cache it so a momentary DB spike doesn't flip readiness\n# keep liveness (process alive) and readiness (can serve) as SEPARATE endpoints\nkubectl create pdb checkout-pdb -n drill --selector=app=checkout --min-available=2"},
+          {label:"Cleanup", code:"kubectl delete namespace drill"}
+        ]
+      }]
     }
   ];
 
   // ============ COMMAND REFERENCE DATA ============
   // Every command uses concrete example values (web, drill, nginx:alpine, etc.)
   // instead of <placeholders> — swap in your own names when you actually run it.
-  const REF_DATA=[
+  // ============ GKE COMMAND REFERENCE (gcloud only — infrastructure layer) ============
+  const GKE_REF_DATA=[
     {cat:"1. gcloud & Authentication", commands:[
       {desc:"Log in to your Google account", cmd:"gcloud auth login", parts:"opens a browser window to authenticate gcloud itself"},
       {desc:"See which account is currently active", cmd:"gcloud auth list", parts:"<b>*</b> next to ACCOUNT marks the active one"},
       {desc:"Set your active GCP project", cmd:"gcloud config set project terraform-gke-learning", parts:"<b>terraform-gke-learning</b> = your GCP project ID"},
       {desc:"Check which project you're currently pointed at", cmd:"gcloud config get-value project"},
       {desc:"Set a default region/zone (saves retyping it every time)", cmd:"gcloud config set compute/region asia-south1"},
-      {desc:"Pull cluster credentials into kubectl (do this after creating/switching clusters)", cmd:"gcloud container clusters get-credentials terraform-gke-cluster --region asia-south1", parts:"<b>terraform-gke-cluster</b> = cluster name · <b>asia-south1</b> = region"}
+      {desc:"Pull cluster credentials into kubectl (do this after creating/switching clusters)", cmd:"gcloud container clusters get-credentials terraform-gke-cluster --region asia-south1", parts:"<b>terraform-gke-cluster</b> = cluster name · <b>asia-south1</b> = region. This writes into ~/.kube/config so kubectl knows where to connect — kubectl itself has no gcloud awareness."}
     ]},
     {cat:"2. Cluster Lifecycle", commands:[
-      {desc:"Create a standard GKE cluster with 3 nodes", cmd:"gcloud container clusters create terraform-gke-cluster --region asia-south1 --num-nodes 3", parts:"<b>terraform-gke-cluster</b> = name you're choosing · <b>--num-nodes 3</b> = nodes per zone"},
-      {desc:"Create an Autopilot cluster (Google manages nodes for you)", cmd:"gcloud container clusters create-auto terraform-gke-cluster --region asia-south1"},
+      {desc:"Create a standard GKE cluster with 3 nodes", cmd:"gcloud container clusters create terraform-gke-cluster --region asia-south1 --num-nodes 3", parts:"<b>terraform-gke-cluster</b> = name you're choosing · <b>--num-nodes 3</b> = nodes PER ZONE, not total (a 3-zone region = 9 nodes)"},
+      {desc:"Create an Autopilot cluster (Google manages nodes for you)", cmd:"gcloud container clusters create-auto terraform-gke-cluster --region asia-south1", parts:"no --num-nodes needed — Autopilot provisions nodes automatically based on pod requests"},
       {desc:"List every cluster in this project", cmd:"gcloud container clusters list"},
       {desc:"See full details of one cluster (version, IP, node pools)", cmd:"gcloud container clusters describe terraform-gke-cluster --region asia-south1"},
-      {desc:"Resize a node pool up or down", cmd:"gcloud container clusters resize terraform-gke-cluster --node-pool pool-1 --num-nodes 5 --region asia-south1", parts:"<b>pool-1</b> = node pool name · <b>5</b> = new node count"},
-      {desc:"Upgrade the cluster's Kubernetes version", cmd:"gcloud container clusters upgrade terraform-gke-cluster --region asia-south1"},
+      {desc:"Resize a node pool up or down (Standard clusters only)", cmd:"gcloud container clusters resize terraform-gke-cluster --node-pool pool-1 --num-nodes 5 --region asia-south1", parts:"<b>pool-1</b> = node pool name · <b>5</b> = new node count PER ZONE. Not used on Autopilot — it manages node count itself."},
+      {desc:"Upgrade the cluster's control plane to a newer Kubernetes version", cmd:"gcloud container clusters upgrade terraform-gke-cluster --region asia-south1 --master --cluster-version 1.35.6-gke.1000", parts:"control plane upgrades first, always — nodes must never run a newer version than the control plane"},
+      {desc:"Upgrade one node pool's Kubernetes version (Standard only)", cmd:"gcloud container clusters upgrade terraform-gke-cluster --region asia-south1 --node-pool pool-1", parts:"rolling drain+replace of every node in the pool — protect workloads with a PodDisruptionBudget first"},
       {desc:"Delete an entire cluster (irreversible — deletes all nodes/workloads)", cmd:"gcloud container clusters delete terraform-gke-cluster --region asia-south1"}
     ]},
-    {cat:"3. Node & Node Pool Management", commands:[
-      {desc:"List node pools inside a cluster", cmd:"gcloud container node-pools list --cluster terraform-gke-cluster --region asia-south1"},
-      {desc:"Add a new node pool to an existing cluster", cmd:"gcloud container node-pools create pool-2 --cluster terraform-gke-cluster --num-nodes 2 --region asia-south1", parts:"<b>pool-2</b> = new pool's name"},
-      {desc:"Delete a node pool", cmd:"gcloud container node-pools delete pool-2 --cluster terraform-gke-cluster --region asia-south1"},
-      {desc:"List every node kubectl can see, with IPs and versions", cmd:"kubectl get nodes -o wide"},
-      {desc:"Inspect one node in full detail (capacity, taints, conditions)", cmd:"kubectl describe node gk3-terraform-gke-cluster-pool-1-hxq2", parts:"<b>gk3-...-hxq2</b> = exact node name from 'get nodes'"},
-      {desc:"Mark a node unschedulable before maintenance (existing pods stay)", cmd:"kubectl cordon gk3-terraform-gke-cluster-pool-1-hxq2"},
-      {desc:"Safely evict all pods off a node so you can maintain/remove it", cmd:"kubectl drain gk3-terraform-gke-cluster-pool-1-hxq2 --ignore-daemonsets"},
-      {desc:"Make a cordoned node schedulable again", cmd:"kubectl uncordon gk3-terraform-gke-cluster-pool-1-hxq2"},
-      {desc:"Live CPU/memory usage per node (needs metrics-server)", cmd:"kubectl top nodes"}
-    ]},
-    {cat:"4. Context & Namespace", commands:[
+    {cat:"3. Node Pool Management (Standard clusters)", commands:[
+      {desc:"List node pools inside a cluster", cmd:"gcloud container node-pools list --cluster terraform-gke-cluster --region asia-south1", parts:"a cluster can have multiple pools — each pool's nodes are identical (same machine type/size)"},
+      {desc:"Add a new node pool to an existing cluster (e.g. for GPU or spot workloads)", cmd:"gcloud container node-pools create pool-2 --cluster terraform-gke-cluster --num-nodes 2 --region asia-south1", parts:"<b>pool-2</b> = new pool's name — give it a different machine-type flag to make it genuinely distinct from pool-1"},
+      {desc:"Delete a node pool", cmd:"gcloud container node-pools delete pool-2 --cluster terraform-gke-cluster --region asia-south1"}
+    ]}
+  ];
+
+  // ============ KUBECTL COMMAND REFERENCE (workload layer — every command, lifecycle order) ============
+  const KUBECTL_REF_DATA=[
+    {cat:"1. Cluster & Context Info", commands:[
+      {desc:"Check kubectl and cluster API server versions", cmd:"kubectl version", parts:"confirm client/server version skew before troubleshooting anything version-sensitive"},
+      {desc:"See basic cluster connection info", cmd:"kubectl cluster-info"},
+      {desc:"List every resource TYPE the API server supports", cmd:"kubectl api-resources", parts:"useful when you forget an exact resource name, e.g. 'is it hpa or horizontalpodautoscaler'"},
+      {desc:"List every API version available on this cluster", cmd:"kubectl api-versions"},
       {desc:"List every cluster context kubectl knows about", cmd:"kubectl config get-contexts"},
       {desc:"See which context (cluster) you're currently talking to", cmd:"kubectl config current-context"},
       {desc:"Switch to a different cluster/context", cmd:"kubectl config use-context gke_terraform-gke-learning_asia-south1_terraform-gke-cluster"},
+      {desc:"Make a namespace your default so you stop typing -n every time", cmd:"kubectl config set-context --current --namespace=drill", parts:"<b>drill</b> = namespace you want as default for the current context"}
+    ]},
+    {cat:"2. Nodes", commands:[
+      {desc:"List every node kubectl can see, with IPs and versions", cmd:"kubectl get nodes -o wide"},
+      {desc:"Inspect one node in full detail (capacity, taints, conditions)", cmd:"kubectl describe node gk3-terraform-gke-cluster-pool-1-hxq2", parts:"<b>gk3-...-hxq2</b> = exact node name from 'get nodes'"},
+      {desc:"Mark a node unschedulable before maintenance (existing pods stay)", cmd:"kubectl cordon gk3-terraform-gke-cluster-pool-1-hxq2"},
+      {desc:"Safely evict all pods off a node so you can maintain/remove it", cmd:"kubectl drain gk3-terraform-gke-cluster-pool-1-hxq2 --ignore-daemonsets", parts:"reschedules pods elsewhere first — this is what a node-pool upgrade does automatically, one node at a time"},
+      {desc:"Make a cordoned node schedulable again", cmd:"kubectl uncordon gk3-terraform-gke-cluster-pool-1-hxq2"},
+      {desc:"Live CPU/memory usage per node (needs metrics-server)", cmd:"kubectl top nodes"},
+      {desc:"Add a taint so only pods that tolerate it can schedule here", cmd:"kubectl taint nodes gk3-terraform-gke-cluster-pool-1-hxq2 dedicated=gpu:NoSchedule", parts:"<b>dedicated=gpu</b> = taint key=value · <b>NoSchedule</b> = effect. Pods need a matching toleration to land here."},
+      {desc:"Remove a taint from a node", cmd:"kubectl taint nodes gk3-terraform-gke-cluster-pool-1-hxq2 dedicated=gpu:NoSchedule-", parts:"trailing <b>-</b> removes the matching taint"}
+    ]},
+    {cat:"3. Namespaces", commands:[
       {desc:"List every namespace on the cluster", cmd:"kubectl get ns"},
-      {desc:"Create a new namespace (isolated workspace for practice/prod separation)", cmd:"kubectl create namespace drill", parts:"<b>drill</b> = the namespace name"},
-      {desc:"Make a namespace your default so you stop typing -n every time", cmd:"kubectl config set-context --current --namespace=drill"},
+      {desc:"Create a new namespace (isolated workspace for practice/prod separation)", cmd:"kubectl create namespace drill", parts:"<b>drill</b> = the namespace name — this is a logical tag, not a physical boundary; pods in it can live on any node"},
+      {desc:"See a namespace's labels/annotations/status", cmd:"kubectl describe namespace drill"},
       {desc:"Delete a namespace AND everything inside it (irreversible)", cmd:"kubectl delete namespace drill"}
     ]},
-    {cat:"5. Pods — get, inspect, logs, exec", commands:[
+    {cat:"4. Pods — get, inspect, logs, exec", commands:[
       {desc:"List pods in the current namespace", cmd:"kubectl get pods"},
       {desc:"List pods in a specific namespace", cmd:"kubectl get pods -n drill", parts:"<b>drill</b> = namespace"},
       {desc:"List pods across every namespace at once", cmd:"kubectl get pods -A"},
       {desc:"List pods with node + IP columns shown", cmd:"kubectl get pods -n drill -o wide"},
       {desc:"Watch pod status update live (Ctrl+C to stop)", cmd:"kubectl get pods -n drill -w"},
-      {desc:"List only pods matching a label (e.g. all pods of one app)", cmd:"kubectl get pods -n drill -l app=web", parts:"<b>app=web</b> = label key=value; web is the app's label, not literally 'three apps'"},
+      {desc:"List only pods matching a label (e.g. all pods of one app)", cmd:"kubectl get pods -n drill -l app=web", parts:"<b>app=web</b> = label key=value — 'web' is the app's label name, not a count"},
       {desc:"Full detail on one pod — status, events, resource limits, mounts", cmd:"kubectl describe pod web-595587cc7f-8ln77 -n drill", parts:"<b>web-595587cc7f-8ln77</b> = exact pod name from 'get pods'"},
       {desc:"Describe every pod matching a label instead of typing the exact name", cmd:"kubectl describe pod -n drill -l app=web"},
       {desc:"Print a pod's current logs", cmd:"kubectl logs web-595587cc7f-8ln77 -n drill"},
+      {desc:"Print logs from one container in a multi-container pod", cmd:"kubectl logs web-595587cc7f-8ln77 -c sidecar -n drill", parts:"<b>-c sidecar</b> = required when the pod has more than one container"},
       {desc:"Stream logs live as they're written", cmd:"kubectl logs web-595587cc7f-8ln77 -n drill -f", parts:"<b>-f</b> = follow, like tail -f"},
-      {desc:"Read logs from the crashed/previous instance of a restarting pod", cmd:"kubectl logs web-595587cc7f-8ln77 -n drill --previous", parts:"may fail with 'unable to retrieve' if it was already garbage-collected"},
+      {desc:"Read logs from the crashed/previous instance of a restarting pod", cmd:"kubectl logs web-595587cc7f-8ln77 -n drill --previous", parts:"may fail with 'unable to retrieve' if it was already garbage-collected on a fast crashloop"},
       {desc:"Open an interactive shell inside a running container", cmd:"kubectl exec -it web-595587cc7f-8ln77 -n drill -- /bin/sh", parts:"<b>-it</b> = interactive+tty · <b>/bin/sh</b> = shell to run (use /bin/bash if the image has it)"},
       {desc:"Run a single one-off command inside a pod without a shell", cmd:"kubectl exec web-595587cc7f-8ln77 -n drill -- env"},
+      {desc:"Attach a debug container to a running pod without restarting it", cmd:"kubectl debug web-595587cc7f-8ln77 -n drill -it --image=busybox", parts:"useful when the pod's own image has no shell/tools to poke around with"},
       {desc:"Delete a single pod (its Deployment/controller will usually recreate it)", cmd:"kubectl delete pod web-595587cc7f-8ln77 -n drill"},
       {desc:"Quickly spin up a throwaway test pod from an image", cmd:"kubectl run test-box --image=nginx:alpine -n drill", parts:"<b>test-box</b> = pod name you're choosing · <b>nginx:alpine</b> = image name:tag"},
-      {desc:"Copy a file out of (or into) a running pod", cmd:"kubectl cp drill/web-595587cc7f-8ln77:/etc/nginx/nginx.conf ./nginx.conf", parts:"format: <b>namespace/pod:/path/in/container</b> then local destination path"}
+      {desc:"Copy a file out of (or into) a running pod", cmd:"kubectl cp drill/web-595587cc7f-8ln77:/etc/nginx/nginx.conf ./nginx.conf", parts:"format: <b>namespace/pod:/path/in/container</b> then local destination path"},
+      {desc:"Forward a local port straight to a pod (bypassing any Service)", cmd:"kubectl port-forward pod/web-595587cc7f-8ln77 8080:80 -n drill", parts:"localhost:8080 -> pod's port 80, for direct local testing"}
     ]},
-    {cat:"6. Deployments — create, scale, roll out, roll back", commands:[
-      {desc:"Create a Deployment straight from an image (quick, no YAML)", cmd:"kubectl create deployment web --image=nginx:alpine -n drill", parts:"<b>web</b> = deployment name · <b>nginx:alpine</b> = image name:tag — alpine here is just the image tag, meaning the lightweight nginx build"},
+    {cat:"5. Deployments — create, scale, roll out, roll back", commands:[
+      {desc:"Create a Deployment straight from an image (quick, no YAML)", cmd:"kubectl create deployment web --image=nginx:alpine -n drill", parts:"<b>web</b> = deployment name · <b>nginx:alpine</b> = image name:tag — alpine is just the tag, meaning the lightweight nginx build"},
       {desc:"Apply a full Deployment (or any resource) from a YAML file", cmd:"kubectl apply -f deployment.yaml"},
       {desc:"List all Deployments in a namespace", cmd:"kubectl get deployments -n drill"},
       {desc:"Full detail on a Deployment — replicas, strategy, conditions, events", cmd:"kubectl describe deployment web -n drill"},
@@ -576,68 +648,83 @@
       {desc:"Roll back to a specific numbered revision", cmd:"kubectl rollout undo deployment/web -n drill --to-revision=2"},
       {desc:"Pause a rollout mid-way (e.g. to stop a bad deploy from finishing)", cmd:"kubectl rollout pause deployment/web -n drill"},
       {desc:"Resume a paused rollout", cmd:"kubectl rollout resume deployment/web -n drill"},
+      {desc:"Restart all pods in a Deployment without changing its spec", cmd:"kubectl rollout restart deployment/web -n drill", parts:"useful for picking up a ConfigMap/Secret change that doesn't trigger a rollout on its own"},
       {desc:"Open a Deployment's live spec in your default editor", cmd:"kubectl edit deployment web -n drill"},
       {desc:"Preview what 'apply' would change before actually applying it", cmd:"kubectl diff -f deployment.yaml"},
+      {desc:"Apply a change to one field without touching the rest of the spec", cmd:"kubectl patch deployment web -n drill --type=json -p='[{\"op\":\"replace\",\"path\":\"/spec/replicas\",\"value\":4}]'", parts:"safer than 'edit' for scripted, precise one-field changes"},
+      {desc:"Fully replace a resource's spec from a YAML file", cmd:"kubectl replace -f deployment.yaml", parts:"unlike apply, this overwrites the whole object — fails if the resource doesn't already exist (add --force to delete+recreate)"},
       {desc:"Delete a Deployment (and its pods/ReplicaSets)", cmd:"kubectl delete deployment web -n drill"}
     ]},
-    {cat:"7. ReplicaSets & Autoscaling", commands:[
+    {cat:"6. ReplicaSets & Autoscaling", commands:[
       {desc:"List ReplicaSets (Deployments create these under the hood)", cmd:"kubectl get rs -n drill"},
       {desc:"Full detail on one ReplicaSet", cmd:"kubectl describe rs web-86d76c75c4 -n drill", parts:"<b>web-86d76c75c4</b> = exact ReplicaSet name from 'get rs'"},
-      {desc:"Auto-scale a Deployment based on CPU usage", cmd:"kubectl autoscale deployment web --min=2 --max=10 --cpu-percent=70 -n drill", parts:"scales between 2–10 replicas, targeting 70% average CPU"},
+      {desc:"Auto-scale a Deployment based on CPU usage", cmd:"kubectl autoscale deployment web --min=2 --max=10 --cpu-percent=70 -n drill", parts:"scales between 2–10 replicas, targeting 70% average CPU across pods"},
       {desc:"List HorizontalPodAutoscalers and their current status", cmd:"kubectl get hpa -n drill"},
-      {desc:"Full detail on one HPA (current vs target metrics)", cmd:"kubectl describe hpa web -n drill"}
+      {desc:"Full detail on one HPA (current vs target metrics)", cmd:"kubectl describe hpa web -n drill"},
+      {desc:"Delete an HPA (stop autoscaling, leave replica count as-is)", cmd:"kubectl delete hpa web -n drill"}
     ]},
-    {cat:"8. Services & Networking", commands:[
+    {cat:"7. Services & Networking", commands:[
       {desc:"Expose a Deployment as a stable network endpoint (Service)", cmd:"kubectl expose deployment web --port=80 --target-port=8080 -n drill", parts:"<b>--port 80</b> = Service's port · <b>--target-port 8080</b> = container's actual listening port"},
       {desc:"List Services in a namespace", cmd:"kubectl get svc -n drill"},
       {desc:"Full detail on a Service — type, cluster IP, selector, ports", cmd:"kubectl describe svc web -n drill"},
-      {desc:"See which pod IPs a Service is actually routing traffic to", cmd:"kubectl get endpoints web -n drill", parts:"empty endpoints = Service has no matching Ready pods, even if pods exist"},
+      {desc:"See which pod IPs a Service is actually routing traffic to", cmd:"kubectl get endpoints web -n drill", parts:"empty endpoints = Service has no matching READY pods, even if pods exist and are Running"},
+      {desc:"See the newer, more detailed version of endpoint data", cmd:"kubectl get endpointslices -l kubernetes.io/service-name=web -n drill", parts:"shows readyAddresses vs notReadyAddresses separately — the key place to look for flaky readiness probes"},
       {desc:"Forward a local port to a Service, for local testing", cmd:"kubectl port-forward svc/web 8080:80 -n drill", parts:"localhost:8080 -> Service's port 80"},
-      {desc:"Forward a local port straight to a pod (bypassing the Service)", cmd:"kubectl port-forward pod/web-595587cc7f-8ln77 8080:80 -n drill"},
       {desc:"Delete a Service", cmd:"kubectl delete svc web -n drill"}
     ]},
-    {cat:"9. Ingress", commands:[
+    {cat:"8. Ingress", commands:[
       {desc:"List Ingress resources (external HTTP/S entry points)", cmd:"kubectl get ingress -n drill"},
       {desc:"Full detail on an Ingress — rules, backend, TLS, address", cmd:"kubectl describe ingress web -n drill"},
       {desc:"Apply an Ingress definition from YAML", cmd:"kubectl apply -f ingress.yaml"},
       {desc:"Delete an Ingress", cmd:"kubectl delete ingress web -n drill"}
     ]},
-    {cat:"10. ConfigMaps & Secrets", commands:[
+    {cat:"9. ConfigMaps & Secrets", commands:[
       {desc:"Create a ConfigMap from literal key=value pairs", cmd:"kubectl create configmap app-config --from-literal=ENV=prod -n drill", parts:"<b>app-config</b> = ConfigMap name · <b>ENV=prod</b> = one key/value entry"},
       {desc:"Create a ConfigMap from a file's contents", cmd:"kubectl create configmap nginx-conf --from-file=nginx.conf -n drill"},
       {desc:"List ConfigMaps", cmd:"kubectl get configmap -n drill"},
       {desc:"View a ConfigMap's actual key/value data", cmd:"kubectl get configmap app-config -n drill -o yaml"},
       {desc:"Create a Secret from literal values (base64-encoded automatically)", cmd:"kubectl create secret generic api-cfg --from-literal=DATABASE_URL='postgres://demo' -n drill", parts:"<b>generic</b> = Secret type · <b>api-cfg</b> = Secret name"},
       {desc:"List Secrets (values hidden by default)", cmd:"kubectl get secrets -n drill"},
+      {desc:"Decode a Secret's actual value (base64 decode)", cmd:"kubectl get secret api-cfg -n drill -o jsonpath='{.data.DATABASE_URL}' | base64 -d", parts:"Secrets are base64-ENCODED by default, not encrypted at rest unless you've enabled that separately"},
       {desc:"Inject a single env var into a running Deployment", cmd:"kubectl set env deployment/api DATABASE_URL='postgres://demo' -n drill"},
       {desc:"Inject every key from a ConfigMap as env vars", cmd:"kubectl set env deployment/api --from=configmap/app-config -n drill"}
     ]},
-    {cat:"11. Storage — PV, PVC, StorageClass", commands:[
+    {cat:"10. Storage — PV, PVC, StorageClass", commands:[
       {desc:"List PersistentVolumeClaims (a pod's request for storage)", cmd:"kubectl get pvc -n drill"},
       {desc:"List PersistentVolumes (the actual storage, cluster-wide)", cmd:"kubectl get pv"},
       {desc:"List available StorageClasses (the 'kind' of disk on offer)", cmd:"kubectl get storageclass"},
       {desc:"Full detail on a PVC — bound status, capacity, access mode", cmd:"kubectl describe pvc data-pvc -n drill", parts:"<b>data-pvc</b> = PVC name"},
-      {desc:"Apply a PVC definition from YAML", cmd:"kubectl apply -f pvc.yaml"}
+      {desc:"Apply a PVC definition from YAML", cmd:"kubectl apply -f pvc.yaml"},
+      {desc:"Delete a PVC (only safe once nothing is using it)", cmd:"kubectl delete pvc data-pvc -n drill"}
     ]},
-    {cat:"12. Jobs & CronJobs", commands:[
+    {cat:"11. Jobs & CronJobs", commands:[
       {desc:"Run a one-off task to completion (not a long-running service)", cmd:"kubectl create job hello-job --image=busybox -n drill -- echo hello", parts:"<b>hello-job</b> = Job name · everything after -- is the container's command"},
       {desc:"List Jobs and whether they completed", cmd:"kubectl get jobs -n drill"},
       {desc:"Schedule a Job to run on a recurring schedule", cmd:"kubectl create cronjob hello-cron --schedule='*/5 * * * *' --image=busybox -n drill -- echo hi", parts:"<b>*/5 * * * *</b> = every 5 minutes, standard cron syntax"},
       {desc:"List CronJobs and their next scheduled run", cmd:"kubectl get cronjobs -n drill"},
+      {desc:"Manually trigger one run of a CronJob right now", cmd:"kubectl create job hello-manual --from=cronjob/hello-cron -n drill", parts:"useful for testing a CronJob without waiting for its schedule"},
       {desc:"Delete a Job (also cleans up its finished pods)", cmd:"kubectl delete job hello-job -n drill"}
     ]},
-    {cat:"13. RBAC & Service Accounts", commands:[
+    {cat:"12. RBAC & Service Accounts", commands:[
       {desc:"List ServiceAccounts (a pod's identity for talking to the API)", cmd:"kubectl get serviceaccounts -n drill"},
       {desc:"Create a new ServiceAccount", cmd:"kubectl create serviceaccount web-sa -n drill", parts:"<b>web-sa</b> = ServiceAccount name"},
       {desc:"List Roles (namespace-scoped permission sets)", cmd:"kubectl get roles -n drill"},
       {desc:"List RoleBindings (who's granted which Role)", cmd:"kubectl get rolebindings -n drill"},
+      {desc:"List ClusterRoles (cluster-wide permission sets)", cmd:"kubectl get clusterroles"},
       {desc:"Check whether you (or another identity) can perform an action", cmd:"kubectl auth can-i delete pods -n drill", parts:"answers yes/no — add '--as=system:serviceaccount:drill:web-sa' to check for a specific SA"}
     ]},
-    {cat:"14. Labels, Selectors & Annotations", commands:[
+    {cat:"13. Labels, Selectors, Annotations & Taints", commands:[
       {desc:"Add/update a label on an existing pod", cmd:"kubectl label pod web-595587cc7f-8ln77 env=prod -n drill", parts:"<b>env=prod</b> = new label key=value"},
       {desc:"Filter resources by one or more labels", cmd:"kubectl get pods -n drill -l app=web,env=prod", parts:"comma = AND — matches pods with BOTH labels"},
       {desc:"Add/update an annotation (free-text metadata, not for selecting)", cmd:"kubectl annotate pod web-595587cc7f-8ln77 note='checked-by-abhi' -n drill"},
       {desc:"Remove a label from a resource", cmd:"kubectl label pod web-595587cc7f-8ln77 env-", parts:"trailing <b>-</b> after the key removes it"}
+    ]},
+    {cat:"14. Declarative Management — apply, diff, patch, kustomize", commands:[
+      {desc:"Apply one file (create if missing, update if it exists)", cmd:"kubectl apply -f deployment.yaml"},
+      {desc:"Apply every YAML file in a folder at once", cmd:"kubectl apply -f ./k8s/", parts:"applies all manifests in the ./k8s directory together"},
+      {desc:"Preview changes before applying them", cmd:"kubectl diff -f deployment.yaml"},
+      {desc:"Build and apply a Kustomize overlay", cmd:"kubectl apply -k ./overlays/prod", parts:"-k points at a directory containing a kustomization.yaml, for environment-specific overlays"},
+      {desc:"Remove resources defined in a file (matching apply, in reverse)", cmd:"kubectl delete -f deployment.yaml"}
     ]},
     {cat:"15. Events, Debugging & Resource Usage", commands:[
       {desc:"See every event in a namespace, most recent last", cmd:"kubectl get events -n drill --sort-by=.lastTimestamp"},
@@ -645,69 +732,129 @@
       {desc:"List every resource of every kind in one namespace at a glance", cmd:"kubectl get all -n drill"},
       {desc:"Look up any resource field's meaning straight from the API docs", cmd:"kubectl explain pod.spec.containers", parts:"works for any nested field, e.g. 'kubectl explain deployment.spec.strategy'"},
       {desc:"Quickly find every pod that ISN'T Running, cluster-wide", cmd:"kubectl get pods -A | grep -iv running"},
-      {desc:"Dump a resource's full live YAML (useful for copy/reuse or diffing)", cmd:"kubectl get deployment web -n drill -o yaml"}
+      {desc:"Dump a resource's full live YAML (useful for copy/reuse or diffing)", cmd:"kubectl get deployment web -n drill -o yaml"},
+      {desc:"Wait for a condition before moving on (e.g. in a script)", cmd:"kubectl wait --for=condition=available deployment/web -n drill --timeout=90s"}
     ]},
     {cat:"16. Cleanup", commands:[
       {desc:"Delete every resource of every kind in one namespace, keep the namespace itself", cmd:"kubectl delete all --all -n drill"},
-      {desc:"Delete a namespace and everything inside it in one shot", cmd:"kubectl delete namespace drill"},
-      {desc:"Tear down the entire GKE cluster (end of a learning session / avoid billing)", cmd:"gcloud container clusters delete terraform-gke-cluster --region asia-south1"}
+      {desc:"Delete a namespace and everything inside it in one shot", cmd:"kubectl delete namespace drill"}
     ]}
   ];
 
-  let refOpen={}; // category index -> bool
-  let refSearch="";
-  function renderRef(){
-    const view=$("#refView");view.innerHTML="";
-    const intro=document.createElement("div");
-    intro.className="refintro";
-    intro.innerHTML="Every GKE/kubectl command in lifecycle order — auth &amp; setup first, cleanup last. Real example values throughout (e.g. <b style=\"color:var(--kube)\">web</b>, <b style=\"color:var(--kube)\">drill</b>, <b style=\"color:var(--kube)\">nginx:alpine</b>) — swap in your own names. Click a category to expand it; every command has a copy button.";
-    view.appendChild(intro);
+  // ============ Per-command user notes on Command Reference (separate storage, additive to seed) ============
+  const REFEDITS_LS_KEY="gke_vault_refedits_v1";
+  function loadRefEdits(){
+    try{const raw=localStorage.getItem(REFEDITS_LS_KEY);if(raw){const p=JSON.parse(raw);if(p&&typeof p==="object")return p;}}catch(e){}
+    return {};
+  }
+  function persistRefEdits(){
+    try{localStorage.setItem(REFEDITS_LS_KEY,JSON.stringify(refEdits));}
+    catch(e){toast("Can't save in preview — download the file to enable saving");}
+  }
+  let refEdits=loadRefEdits();
+  let refEditingKeys={};
 
-    const searchWrap=document.createElement("div");
-    searchWrap.className="search refsearch";
-    searchWrap.innerHTML='<span class="icon">⌕</span><input id="refSearchInput" placeholder="Search commands — e.g. rollback, logs, scale, secret…" autocomplete="off" />';
-    view.appendChild(searchWrap);
-    const input=searchWrap.querySelector("#refSearchInput");
-    input.value=refSearch;
-    input.addEventListener("input",()=>{refSearch=input.value;renderRefList();});
-    view.appendChild(document.createElement("div")).id="refList";
-    renderRefList();
-
-    function renderRefList(){
-      const list=$("#refList");list.innerHTML="";
-      const q=refSearch.trim().toLowerCase();
-      let anyMatch=false;
-      REF_DATA.forEach((cat,ci)=>{
-        const cmds=q?cat.commands.filter(c=>(c.desc+" "+c.cmd+" "+(c.parts||"")).toLowerCase().includes(q)):cat.commands;
-        if(!cmds.length) return;
-        anyMatch=true;
-        const open=!!refOpen[ci] || !!q;
-        const box=document.createElement("div");
-        box.className="refcat"+(open?" open":"");
-        box.innerHTML=`<div class="refcat-head">
-            <span class="rnum">${ci+1}</span>
-            <h3>${esc(cat.cat.replace(/^\d+\.\s*/,""))}</h3>
-            <span class="rcount">${cmds.length}</span>
-            <span class="rchev">▶</span>
-          </div>
-          <div class="refcat-body"></div>`;
-        box.querySelector(".refcat-head").addEventListener("click",()=>{refOpen[ci]=!open;renderRefList();});
-        const body=box.querySelector(".refcat-body");
-        cmds.forEach(c=>{
-          const row=document.createElement("div");row.className="refcmd";
-          row.innerHTML=`<div class="rdesc">${esc(c.desc)}</div>
-            <pre class="code"><button class="copy">copy</button><code>${hlComments(c.cmd)}</code></pre>
-            ${c.parts?`<div class="rparts">${c.parts}</div>`:""}`;
-          row.querySelector(".copy").addEventListener("click",e=>{e.stopPropagation();copy(row.querySelector("code").innerText,e.target);});
-          body.appendChild(row);
-        });
-        list.appendChild(box);
+  function renderUserNote(container,key){
+    const editing=!!refEditingKeys[key];
+    const text=refEdits[key]||"";
+    if(editing){
+      container.innerHTML=`<textarea class="runinput" placeholder="Add your own detail for this command…"></textarea>
+        <div class="runactions"><button class="linkbtn" data-act="cancel">cancel</button><button class="btn sm primary" data-act="save">save</button></div>`;
+      container.querySelector(".runinput").value=text;
+      container.querySelector('[data-act="save"]').addEventListener("click",()=>{
+        const val=container.querySelector(".runinput").value.trim();
+        if(val)refEdits[key]=val;else delete refEdits[key];
+        refEditingKeys[key]=false;
+        persistRefEdits();
+        renderUserNote(container,key);
       });
-      if(!anyMatch){
-        const e=document.createElement("div");e.className="empty";e.textContent='No commands match "'+q+'"';list.appendChild(e);
-      }
+      container.querySelector('[data-act="cancel"]').addEventListener("click",()=>{
+        refEditingKeys[key]=false;renderUserNote(container,key);
+      });
+    }else if(text){
+      container.innerHTML=`<div class="run-display"><span class="run-label">Your note:</span><span class="run-text"></span><button class="linkbtn" data-act="edit">edit</button></div>`;
+      container.querySelector(".run-text").textContent=text;
+      container.querySelector('[data-act="edit"]').addEventListener("click",()=>{refEditingKeys[key]=true;renderUserNote(container,key);});
+    }else{
+      container.innerHTML=`<button class="add-note-btn" data-act="edit">✎ add your notes</button>`;
+      container.querySelector('[data-act="edit"]').addEventListener("click",()=>{refEditingKeys[key]=true;renderUserNote(container,key);});
     }
   }
+
+  function makeRefRenderer(containerId, dataArr, introText, placeholderText, tabKey){
+    let openState={}, searchState="";
+    return function render(){
+      const view=$(containerId);view.innerHTML="";
+      const intro=document.createElement("div");
+      intro.className="refintro";
+      intro.innerHTML=introText;
+      view.appendChild(intro);
+
+      const searchWrap=document.createElement("div");
+      searchWrap.className="search refsearch";
+      const inputId=containerId.replace("#","")+"SearchInput";
+      searchWrap.innerHTML=`<span class="icon">⌕</span><input id="${inputId}" placeholder="${esc(placeholderText)}" autocomplete="off" />`;
+      view.appendChild(searchWrap);
+      const input=searchWrap.querySelector("#"+inputId);
+      input.value=searchState;
+      input.addEventListener("input",()=>{searchState=input.value;renderList();});
+      const listHolder=document.createElement("div");listHolder.id=containerId.replace("#","")+"List";
+      view.appendChild(listHolder);
+      renderList();
+
+      function renderList(){
+        const list=document.getElementById(containerId.replace("#","")+"List");list.innerHTML="";
+        const q=searchState.trim().toLowerCase();
+        let anyMatch=false;
+        dataArr.forEach((cat,ci)=>{
+          const cmds=q?cat.commands.filter(c=>(c.desc+" "+c.cmd+" "+(c.parts||"")+" "+(refEdits[tabKey+":"+ci+":"+cat.commands.indexOf(c)]||"")).toLowerCase().includes(q)):cat.commands;
+          if(!cmds.length) return;
+          anyMatch=true;
+          const open=!!openState[ci] || !!q;
+          const box=document.createElement("div");
+          box.className="refcat"+(open?" open":"");
+          box.innerHTML=`<div class="refcat-head">
+              <span class="rnum">${ci+1}</span>
+              <h3>${esc(cat.cat.replace(/^\d+\.\s*/,""))}</h3>
+              <span class="rcount">${cmds.length}</span>
+              <span class="rchev">▶</span>
+            </div>
+            <div class="refcat-body"></div>`;
+          box.querySelector(".refcat-head").addEventListener("click",()=>{openState[ci]=!open;renderList();});
+          const body=box.querySelector(".refcat-body");
+          cmds.forEach(c=>{
+            const cmdIndex=cat.commands.indexOf(c);
+            const key=tabKey+":"+ci+":"+cmdIndex;
+            const row=document.createElement("div");row.className="refcmd";
+            row.innerHTML=`<div class="rdesc">${esc(c.desc)}</div>
+              <pre class="code"><button class="copy">copy</button><code>${hlComments(c.cmd)}</code></pre>
+              ${c.parts?`<div class="rparts">${c.parts}</div>`:""}
+              <div class="rusernote"></div>`;
+            row.querySelector(".copy").addEventListener("click",e=>{e.stopPropagation();copy(row.querySelector("code").innerText,e.target);});
+            renderUserNote(row.querySelector(".rusernote"),key);
+            body.appendChild(row);
+          });
+          list.appendChild(box);
+        });
+        if(!anyMatch){
+          const e=document.createElement("div");e.className="empty";e.textContent='No commands match "'+q+'"';list.appendChild(e);
+        }
+      }
+    };
+  }
+
+  const renderRef=makeRefRenderer(
+    "#refView", GKE_REF_DATA,
+    "Every <b style=\"color:var(--kube)\">gcloud</b> command for managing GKE as infrastructure — creating, resizing, upgrading, deleting clusters and node pools. Real example values throughout (e.g. <b style=\"color:var(--kube)\">terraform-gke-cluster</b>, <b style=\"color:var(--kube)\">asia-south1</b>) — swap in your own names.",
+    "Search gcloud commands — e.g. resize, upgrade, node pool…",
+    "gke"
+  );
+  const renderKubectlRef=makeRefRenderer(
+    "#kubectlView", KUBECTL_REF_DATA,
+    "Every <b style=\"color:var(--kube)\">kubectl</b> command for operating workloads inside an existing cluster — from context setup through cleanup. Real example values throughout (e.g. <b style=\"color:var(--kube)\">web</b>, <b style=\"color:var(--kube)\">drill</b>, <b style=\"color:var(--kube)\">nginx:alpine</b>) — swap in your own names.",
+    "Search kubectl commands — e.g. rollback, logs, scale, secret…",
+    "kubectl"
+  );
 
   // ============ MY NOTES (separate scratchpad, own storage key) ============
   const NOTES_LS_KEY="gke_vault_mynotes_v1";
@@ -1098,9 +1245,11 @@
       t.classList.add("on");
       const v=t.dataset.view;
       $("#drillsView").style.display = v==="drills" ? "" : "none";
-      $("#refView").style.display = v==="ref" ? "" : "none";
+      $("#refView").style.display = v==="gke" ? "" : "none";
+      $("#kubectlView").style.display = v==="kubectl" ? "" : "none";
       $("#notesView").style.display = v==="notes" ? "" : "none";
-      if(v==="ref") renderRef();
+      if(v==="gke") renderRef();
+      if(v==="kubectl") renderKubectlRef();
       if(v==="notes") renderNotes();
     });
   });
