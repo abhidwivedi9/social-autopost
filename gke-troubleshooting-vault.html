@@ -171,10 +171,17 @@
   .refcmd .rparts{font-family:var(--mono);font-size:11.5px;color:var(--muted);margin-top:7px;line-height:1.7}
   .refcmd .rparts b{color:var(--kube);font-weight:600}
   .rusernote{margin-top:8px}
-  .run-display{font-family:var(--mono);font-size:11.5px;color:var(--text);background:var(--code-bg);border:1px solid var(--border-soft);border-radius:6px;padding:8px 10px;display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap}
-  .run-label{color:var(--kube);font-weight:600;flex:0 0 auto}
-  .run-text{flex:1;white-space:pre-wrap;word-break:break-word}
-  .run-display .linkbtn{flex:0 0 auto}
+  .run-display{font-family:var(--mono);font-size:11.5px;color:var(--text);background:var(--code-bg);border:1px solid var(--border-soft);border-radius:6px;padding:8px 10px}
+  .run-display .run-head{display:flex;gap:8px;align-items:center;cursor:pointer}
+  .run-display .run-label{color:var(--kube);font-weight:600;flex:0 0 auto}
+  .run-display .run-preview{flex:1;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .run-display.open .run-preview{display:none}
+  .run-display .run-chev{color:var(--muted-2);font-family:var(--mono);font-size:11px;transition:transform .18s;flex:0 0 auto}
+  .run-display.open .run-chev{transform:rotate(90deg)}
+  .run-display .run-body{display:none;margin-top:8px}
+  .run-display.open .run-body{display:block}
+  .run-display .run-text{white-space:pre-wrap;word-break:break-word}
+  .run-display .run-edit-row{display:flex;justify-content:flex-end;margin-top:8px}
   .add-note-btn{color:var(--muted-2);font-family:var(--mono);font-size:11px;background:none;border:1px dashed var(--border);border-radius:6px;padding:5px 9px;cursor:pointer}
   .add-note-btn:hover{color:var(--kube);border-color:var(--kube)}
   .runinput{width:100%;background:var(--code-bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;font-family:var(--mono);font-size:12px;min-height:56px;resize:vertical;outline:none}
@@ -753,6 +760,7 @@
   }
   let refEdits=loadRefEdits();
   let refEditingKeys={};
+  let refNoteOpen={};
 
   function renderUserNote(container,key){
     const editing=!!refEditingKeys[key];
@@ -772,9 +780,22 @@
         refEditingKeys[key]=false;renderUserNote(container,key);
       });
     }else if(text){
-      container.innerHTML=`<div class="run-display"><span class="run-label">Your note:</span><span class="run-text"></span><button class="linkbtn" data-act="edit">edit</button></div>`;
+      const open=!!refNoteOpen[key];
+      const previewLine=text.split("\n").find(l=>l.trim())||"";
+      container.innerHTML=`<div class="run-display${open?" open":""}">
+          <div class="run-head">
+            <span class="run-chev">▶</span>
+            <span class="run-label">Your note</span>
+            <span class="run-preview">${esc(previewLine)}</span>
+          </div>
+          <div class="run-body">
+            <div class="run-text"></div>
+            <div class="run-edit-row"><button class="linkbtn" data-act="edit">edit</button></div>
+          </div>
+        </div>`;
       container.querySelector(".run-text").textContent=text;
-      container.querySelector('[data-act="edit"]').addEventListener("click",()=>{refEditingKeys[key]=true;renderUserNote(container,key);});
+      container.querySelector(".run-head").addEventListener("click",()=>{refNoteOpen[key]=!open;renderUserNote(container,key);});
+      container.querySelector('[data-act="edit"]').addEventListener("click",(e)=>{e.stopPropagation();refEditingKeys[key]=true;renderUserNote(container,key);});
     }else{
       container.innerHTML=`<button class="add-note-btn" data-act="edit">✎ add your notes</button>`;
       container.querySelector('[data-act="edit"]').addEventListener("click",()=>{refEditingKeys[key]=true;renderUserNote(container,key);});
