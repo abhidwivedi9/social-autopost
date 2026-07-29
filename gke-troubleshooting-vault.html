@@ -290,6 +290,7 @@
     <button class="vtab on" data-view="drills">🩺 Troubleshooting Drills</button>
     <button class="vtab" data-view="gke">☁️ GKE Commands</button>
     <button class="vtab" data-view="kubectl">⚙️ kubectl Commands</button>
+    <button class="vtab" data-view="terraform">🏗️ Terraform Commands</button>
     <button class="vtab" data-view="notes">🗒️ My Notes</button>
   </div>
 
@@ -314,6 +315,8 @@
   <div id="refView" style="display:none"></div>
 
   <div id="kubectlView" style="display:none"></div>
+
+  <div id="terraformView" style="display:none"></div>
 
   <div id="notesView" style="display:none"></div>
 
@@ -376,7 +379,7 @@
 <script>
 (function(){
   "use strict";
-  const LS_KEY="gke_vault_v8";
+  const LS_KEY="gke_vault_v9";
 
   // ============ SEED ============
   const SEED=[
@@ -548,15 +551,15 @@
         tags:["readiness-probe","endpoints","service","networking","load-balancing"],
         symptom:"The 'checkout' service in drill is up — all pods Running, RESTARTS 0, no CrashLoop. But users hit intermittent 502s / connection resets. Sometimes checkout works, sometimes it doesn't. 'kubectl get pods' looks totally healthy. On-call is stumped because nothing is obviously broken.",
         hint:"Watch the READY column, not RESTARTS — it flickers 1/1 <-> 0/1. The container is never killed, so this is NOT a crash or a liveness kill. Go look at what the Service actually has as backends.",
-        diagnosis:"get pods -w -> READY flaps 1/1 <-> 0/1, RESTARTS stays 0, no CrashLoop. get endpointslices -> the ready-address list shrinks and grows; pods intermittently land in notReadyAddresses. describe pod -> Events show 'Readiness probe failed' repeatedly, but NO 'Liveness probe failed', NO 'Killing', RESTARTS 0. The readinessProbe is tight (timeoutSeconds=1, periodSeconds=2, failureThreshold=1) and /ready synchronously pings a downstream DB whose p99 occasionally exceeds the timeout.",
-        rootCause:"The readiness probe is too aggressive AND coupled to a slow dependency. On each transient slow /ready response, kubelet marks the pod NotReady -> the endpoint controller yanks that pod's IP out of the Service's EndpointSlice -> the Service now has fewer (sometimes zero) backends -> intermittent 5xx. Because it's READINESS not LIVENESS, the container is never restarted, so all the usual 'unhealthy pod' tells (restarts, CrashLoop) are absent. That's why it's silent.",
-        fix:"Loosen the probe so one blip doesn't flip readiness (raise timeoutSeconds, periodSeconds, and especially failureThreshold). Make /ready a SHALLOW self-check, not coupled to a slow downstream (or cache the downstream health result). Keep liveness ('process alive') and readiness ('can serve') as separate endpoints. Add a PodDisruptionBudget so you always retain healthy backends.",
-        mental:"Contrast with the liveness drill: liveness fail KILLS & restarts (RESTARTS climb, Exit 137); readiness fail NEVER restarts — it silently evicts the pod from load balancing. Same probe family, opposite failure signature. Healthy pods + intermittent 5xx = go straight to endpoints, not logs.",
+        diagnosis:"get pods -w -> READY flaps 1/1 <-> 0/1 across all 3 pods, RESTARTS stays 0, no CrashLoop. get endpoints checkout -> address count is short (e.g. 2 of 3) at any given moment, changing second to second. describe pod -> Events show repeated 'Readiness probe failed: HTTP probe failed with statuscode: 503' (dozens of times in a few minutes), but NO 'Liveness probe failed', NO 'Killing', RESTARTS 0. The /healthz endpoint has a built-in 40% random chance of returning 503 with failureThreshold=1 and periodSeconds=3s — zero tolerance, checked every 3s.",
+        rootCause:"The readiness probe hits an endpoint that's deliberately/effectively flaky (real-world equivalent: a shallow check coupled to something unreliable, e.g. a slow downstream). Because failureThreshold=1, a SINGLE bad check (40% chance, every 3s) is enough to flip a perfectly healthy pod to NotReady -> the endpoint controller yanks its IP out of the Service's endpoints -> fewer backends -> intermittent 5xx for whoever's request lands during that window. The container is never restarted (readiness, not liveness), so RESTARTS/CrashLoop tells stay silent the whole time.",
+        fix:"Raise failureThreshold (e.g. 1 -> 3) so a pod needs multiple consecutive bad checks before being pulled — since each check only has a 40% failure chance, 3-in-a-row is far rarer than 1 alone, so healthy pods stop getting falsely evicted while a genuinely broken pod still gets caught. Production fix: make the readiness endpoint a SHALLOW self-check, not coupled to something with its own failure rate — or cache a downstream health result instead of checking it live on every probe.",
+        mental:"Contrast with the liveness drill: liveness fail KILLS & restarts (RESTARTS climb, Exit 137); readiness fail NEVER restarts — it silently evicts the pod from load balancing. Same probe family, opposite failure signature. Healthy pods + intermittent 5xx = go straight to endpoints, not logs. CONFIRM LIVE with 'watch -n1 kubectl get endpoints' — watching the address count/list actually change second-to-second is the clearest proof of the mechanism. Unrelated noise to expect: 'FailedScheduling' events (Insufficient memory / untolerated taints) followed by a 'Scheduled' event just means GKE Autopilot's Node Auto-Provisioning was spinning up a new node to fit the pods — not part of this bug, resolves on its own.",
         commands:[
-          {label:"Setup (break it)", code:"kubectl create namespace drill\n# checkout readinessProbe: timeoutSeconds=1, periodSeconds=2, failureThreshold=1\n# /ready synchronously pings a slow DB whose p99 sometimes exceeds 1s"},
-          {label:"Diagnose", code:"kubectl get pods -n drill -l app=checkout -w                                  # READY flaps 1/1 <-> 0/1, RESTARTS stays 0\nkubectl get endpointslices -n drill -l kubernetes.io/service-name=checkout    # ready addresses shrink/grow\nkubectl get endpoints checkout -n drill                                       # backend list intermittently empty -> 502s\nkubectl describe pod -n drill -l app=checkout                                 # Events: 'Readiness probe failed' — but NO Killing, RESTARTS 0"},
-          {label:"Fix (quick patch)", code:"kubectl patch deployment checkout -n drill --type=json -p='[\n  {\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/readinessProbe/timeoutSeconds\",\"value\":5},\n  {\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/readinessProbe/periodSeconds\",\"value\":10},\n  {\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/readinessProbe/failureThreshold\",\"value\":3}\n]'\nkubectl rollout status -n drill deployment/checkout\nkubectl get pods -n drill -l app=checkout                                     # READY stable 1/1, no flapping"},
-          {label:"Fix (proper)", code:"# make /ready a SHALLOW check (can the process serve?) — do NOT couple it to a slow downstream\n# if downstream health is truly required, cache it so a momentary DB spike doesn't flip readiness\n# keep liveness (process alive) and readiness (can serve) as SEPARATE endpoints\nkubectl create pdb checkout-pdb -n drill --selector=app=checkout --min-available=2"},
+          {label:"Setup (break it)", code:"kubectl create namespace drill\nkubectl apply -n drill -f checkout.yaml\n# /healthz has a 40% random chance of returning 503\n# readinessProbe: periodSeconds=3, failureThreshold=1 (zero tolerance)"},
+          {label:"Diagnose", code:"kubectl get pods -n drill -l app=checkout -w                                  # READY flaps 1/1 <-> 0/1, RESTARTS stays 0\nkubectl get endpoints checkout -n drill                                       # address count is short/changing\nwatch -n1 \"kubectl get endpoints checkout -n drill\"                           # WATCH IT LIVE — count/addresses change every few seconds\nkubectl get endpointslices -l kubernetes.io/service-name=checkout -n drill -o yaml   # ready:true/false per address, explicit\nkubectl describe pod -n drill -l app=checkout                                 # Events: repeated 'Readiness probe failed... statuscode: 503' — NO Killing, RESTARTS 0\nkubectl logs -n drill <pod-name> -f                                           # (this toy app logs every /healthz hit — watch 200s/503s alternate live)"},
+          {label:"Fix", code:"kubectl patch deployment checkout -n drill --type=json -p='[\n  {\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/readinessProbe/failureThreshold\",\"value\":3}\n]'\nkubectl rollout status -n drill deployment/checkout\nwatch -n1 \"kubectl get endpoints checkout -n drill\"                           # confirm: stays steady near 3, no more flapping"},
+          {label:"Fix (proper, production)", code:"# make /healthz a SHALLOW check, not dependent on something with its own failure rate\n# if a downstream check is genuinely needed, cache its result instead of hitting it live every probe\n# keep liveness (process alive) and readiness (can serve) as SEPARATE endpoints\nkubectl create pdb checkout-pdb -n drill --selector=app=checkout --min-available=2"},
           {label:"Cleanup", code:"kubectl delete namespace drill"}
         ]
       }]
@@ -748,6 +751,85 @@
     ]}
   ];
 
+  // ============ TERRAFORM COMMAND REFERENCE (infrastructure as code — full lifecycle) ============
+  const TERRAFORM_REF_DATA=[
+    {cat:"1. Setup & Initialization", commands:[
+      {desc:"Initialize a working directory — downloads providers/modules, sets up backend", cmd:"terraform init", parts:"run this first, always — before plan/apply, and again any time you add a new provider or module"},
+      {desc:"Re-download providers/modules to their latest allowed versions", cmd:"terraform init -upgrade"},
+      {desc:"Re-run init after changing your backend config (e.g. switching to remote state)", cmd:"terraform init -reconfigure", parts:"skips trying to migrate existing state — use when you want a clean re-point, not a migration"},
+      {desc:"Re-run init and migrate existing state into a newly configured backend", cmd:"terraform init -migrate-state", parts:"use this instead of -reconfigure when you want your CURRENT state carried over to the new backend"},
+      {desc:"Check installed Terraform and provider versions", cmd:"terraform version"},
+      {desc:"List the providers this configuration requires", cmd:"terraform providers"}
+    ]},
+    {cat:"2. Formatting & Validation", commands:[
+      {desc:"Auto-format all .tf files to canonical style", cmd:"terraform fmt", parts:"rewrites files in place — run before every commit"},
+      {desc:"Check formatting without changing files (good for CI)", cmd:"terraform fmt -check", parts:"exits non-zero if anything is mis-formatted — used to fail a pipeline on bad style"},
+      {desc:"Format every .tf file in subdirectories too", cmd:"terraform fmt -recursive"},
+      {desc:"Check the configuration is internally valid (syntax, type errors, required args)", cmd:"terraform validate", parts:"does NOT check against real cloud state — just that the config itself is well-formed"}
+    ]},
+    {cat:"3. Planning Changes", commands:[
+      {desc:"Preview what Terraform would create/change/destroy, without doing it", cmd:"terraform plan"},
+      {desc:"Save the plan to a file so you can apply that EXACT plan later", cmd:"terraform plan -out=tfplan.out", parts:"<b>tfplan.out</b> = filename you're choosing — apply this file to guarantee no drift between plan and apply"},
+      {desc:"Override one variable's value just for this plan/apply", cmd:"terraform plan -var=\"cluster_name=terraform-gke-cluster\"", parts:"<b>cluster_name</b> = variable name declared in your .tf files"},
+      {desc:"Load variable values from a file instead of typing them", cmd:"terraform plan -var-file=\"prod.tfvars\""},
+      {desc:"Preview a plan scoped to just one resource", cmd:"terraform plan -target=google_container_cluster.primary", parts:"<b>google_container_cluster.primary</b> = resource type.name from your .tf file — use sparingly, it can hide side effects on dependent resources"},
+      {desc:"Preview what destroying everything would look like (without doing it)", cmd:"terraform plan -destroy"}
+    ]},
+    {cat:"4. Applying Changes", commands:[
+      {desc:"Apply changes — prompts for confirmation before making them", cmd:"terraform apply"},
+      {desc:"Apply without the interactive yes/no prompt (needed for CI/CD pipelines)", cmd:"terraform apply -auto-approve", parts:"use with real caution outside of pipelines — this is the command that actually changes real infrastructure with zero human check"},
+      {desc:"Apply a previously saved plan file exactly as reviewed", cmd:"terraform apply tfplan.out", parts:"the safest apply pattern: plan -out, review it, then apply that exact saved file — guarantees what you approved is what runs"},
+      {desc:"Apply changes scoped to just one resource", cmd:"terraform apply -target=google_container_cluster.primary"},
+      {desc:"Apply with variables passed directly", cmd:"terraform apply -var=\"node_count=3\""}
+    ]},
+    {cat:"5. State Management", commands:[
+      {desc:"List every resource Terraform is currently tracking", cmd:"terraform state list", parts:"the state file is Terraform's memory of what it created — this shows what's in it"},
+      {desc:"Show full details of one tracked resource", cmd:"terraform state show google_container_cluster.primary"},
+      {desc:"Rename a resource in state without destroying/recreating it", cmd:"terraform state mv google_container_cluster.primary google_container_cluster.main", parts:"use when you rename a resource in your .tf code and don't want Terraform to think it's a delete+create"},
+      {desc:"Remove a resource from Terraform's tracking WITHOUT destroying it in real life", cmd:"terraform state rm google_container_cluster.primary", parts:"the actual GKE cluster keeps running — Terraform just 'forgets' it exists. Used when handing a resource to manual/other management."},
+      {desc:"Download and print the current remote state", cmd:"terraform state pull"},
+      {desc:"Manually mark a resource as needing recreation on next apply", cmd:"terraform apply -replace=google_container_cluster.primary", parts:"modern replacement for the old 'terraform taint' command — forces destroy+recreate of just this one resource"}
+    ]},
+    {cat:"6. Importing Existing Infrastructure", commands:[
+      {desc:"Bring an already-existing real resource under Terraform's management", cmd:"terraform import google_container_cluster.primary projects/terraform-gke-learning/locations/asia-south1/clusters/terraform-gke-cluster", parts:"format: <b>resource.address</b> then the cloud provider's own resource ID — you still need matching .tf code written by hand first"}
+    ]},
+    {cat:"7. Workspaces (managing multiple environments)", commands:[
+      {desc:"List all workspaces", cmd:"terraform workspace list", parts:"workspaces let one set of .tf files manage separate states, e.g. dev/staging/prod"},
+      {desc:"Create a new workspace", cmd:"terraform workspace new staging"},
+      {desc:"Switch to a different workspace", cmd:"terraform workspace select staging"},
+      {desc:"See which workspace is currently active", cmd:"terraform workspace show"},
+      {desc:"Delete a workspace (must not be the currently active one)", cmd:"terraform workspace delete staging"}
+    ]},
+    {cat:"8. Variables & Outputs", commands:[
+      {desc:"Print all output values after an apply", cmd:"terraform output"},
+      {desc:"Print one specific output value", cmd:"terraform output cluster_endpoint", parts:"<b>cluster_endpoint</b> = an output block's name declared in your .tf files"},
+      {desc:"Print outputs as JSON (for piping into scripts)", cmd:"terraform output -json"}
+    ]},
+    {cat:"9. Destroying Infrastructure", commands:[
+      {desc:"Destroy everything Terraform manages in this configuration", cmd:"terraform destroy", parts:"prompts for confirmation — this is irreversible for real cloud resources"},
+      {desc:"Destroy without the confirmation prompt (CI/CD only — be careful)", cmd:"terraform destroy -auto-approve"},
+      {desc:"Destroy just one resource, leave everything else intact", cmd:"terraform destroy -target=google_container_node_pool.pool_2"}
+    ]},
+    {cat:"10. Modules", commands:[
+      {desc:"Download/update modules referenced in your configuration", cmd:"terraform get", parts:"usually handled automatically by 'terraform init' — this is the standalone version"},
+      {desc:"Update modules to their latest allowed versions", cmd:"terraform get -update"}
+    ]},
+    {cat:"11. Inspecting & Debugging", commands:[
+      {desc:"Show the full current state in human-readable form", cmd:"terraform show"},
+      {desc:"Show a saved plan file's contents before applying it", cmd:"terraform show tfplan.out"},
+      {desc:"Generate a visual dependency graph of all resources", cmd:"terraform graph", parts:"pipe into a tool like Graphviz (e.g. 'terraform graph | dot -Tpng > graph.png') to actually see it"},
+      {desc:"Open an interactive console to test expressions against real state", cmd:"terraform console", parts:"type an expression like 'google_container_cluster.primary.endpoint' to evaluate it live, without applying anything"},
+      {desc:"Enable verbose debug logging for troubleshooting Terraform itself", cmd:"TF_LOG=DEBUG terraform apply", parts:"<b>TF_LOG</b> = env var, not a flag — set to TRACE/DEBUG/INFO/WARN/ERROR depending on how much detail you need"}
+    ]},
+    {cat:"12. Locking & Concurrency (remote state)", commands:[
+      {desc:"Force-remove a stuck state lock (only if you're SURE no one else is applying)", cmd:"terraform force-unlock LOCK_ID", parts:"<b>LOCK_ID</b> = the lock ID printed in the error message when a lock is stuck — never run this if someone else's apply might genuinely still be running"}
+    ]},
+    {cat:"13. Cleanup", commands:[
+      {desc:"Remove the local .terraform directory (downloaded providers/modules cache)", cmd:"rm -rf .terraform", parts:"safe to delete — 'terraform init' rebuilds it. Never delete terraform.tfstate this way — that's your real infrastructure's record."},
+      {desc:"Destroy all managed infrastructure, the actual teardown", cmd:"terraform destroy"}
+    ]}
+  ];
+
   // ============ Per-command user notes on Command Reference (separate storage, additive to seed) ============
   const REFEDITS_LS_KEY="gke_vault_refedits_v1";
   function loadRefEdits(){
@@ -828,7 +910,7 @@
         const q=searchState.trim().toLowerCase();
         let anyMatch=false;
         dataArr.forEach((cat,ci)=>{
-          const cmds=q?cat.commands.filter(c=>(c.desc+" "+c.cmd+" "+(c.parts||"")+" "+(refEdits[tabKey+":"+ci+":"+cat.commands.indexOf(c)]||"")).toLowerCase().includes(q)):cat.commands;
+          const cmds=q?cat.commands.filter(c=>(c.desc+" "+c.cmd+" "+(c.parts||"")+" "+(refEdits[tabKey+"::"+c.cmd]||"")).toLowerCase().includes(q)):cat.commands;
           if(!cmds.length) return;
           anyMatch=true;
           const open=!!openState[ci] || !!q;
@@ -844,8 +926,7 @@
           box.querySelector(".refcat-head").addEventListener("click",()=>{openState[ci]=!open;renderList();});
           const body=box.querySelector(".refcat-body");
           cmds.forEach(c=>{
-            const cmdIndex=cat.commands.indexOf(c);
-            const key=tabKey+":"+ci+":"+cmdIndex;
+            const key=tabKey+"::"+c.cmd;
             const row=document.createElement("div");row.className="refcmd";
             row.innerHTML=`<div class="rdesc">${esc(c.desc)}</div>
               <pre class="code"><button class="copy">copy</button><code>${hlComments(c.cmd)}</code></pre>
@@ -875,6 +956,12 @@
     "Every <b style=\"color:var(--kube)\">kubectl</b> command for operating workloads inside an existing cluster — from context setup through cleanup. Real example values throughout (e.g. <b style=\"color:var(--kube)\">web</b>, <b style=\"color:var(--kube)\">drill</b>, <b style=\"color:var(--kube)\">nginx:alpine</b>) — swap in your own names.",
     "Search kubectl commands — e.g. rollback, logs, scale, secret…",
     "kubectl"
+  );
+  const renderTerraformRef=makeRefRenderer(
+    "#terraformView", TERRAFORM_REF_DATA,
+    "Every <b style=\"color:var(--kube)\">terraform</b> command, full lifecycle — init through destroy, plus state management, workspaces, and debugging. Real example values throughout (e.g. <b style=\"color:var(--kube)\">terraform-gke-learning</b>, <b style=\"color:var(--kube)\">google_container_cluster.primary</b>) — swap in your own resource names.",
+    "Search terraform commands — e.g. state, workspace, plan, import…",
+    "terraform"
   );
 
   // ============ MY NOTES (separate scratchpad, own storage key) ============
@@ -1268,9 +1355,11 @@
       $("#drillsView").style.display = v==="drills" ? "" : "none";
       $("#refView").style.display = v==="gke" ? "" : "none";
       $("#kubectlView").style.display = v==="kubectl" ? "" : "none";
+      $("#terraformView").style.display = v==="terraform" ? "" : "none";
       $("#notesView").style.display = v==="notes" ? "" : "none";
       if(v==="gke") renderRef();
       if(v==="kubectl") renderKubectlRef();
+      if(v==="terraform") renderTerraformRef();
       if(v==="notes") renderNotes();
     });
   });
