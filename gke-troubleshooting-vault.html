@@ -30,6 +30,8 @@
   .logo{width:40px;height:40px;border-radius:9px;flex:0 0 auto;background:linear-gradient(140deg,var(--kube),#2f5fc0);display:grid;place-items:center;font-family:var(--mono);font-weight:700;color:#fff;box-shadow:0 4px 14px rgba(90,143,245,.35)}
   h1{font-size:19px;margin:0;letter-spacing:.2px}
   .sub{color:var(--muted);font-size:12.5px;font-family:var(--mono);margin-top:2px}
+  .sub.sync-on{color:var(--resolved)}
+  .sub.sync-off{color:var(--muted-2)}
   .stats{display:flex;gap:8px;font-family:var(--mono);font-size:12px;color:var(--muted)}
   .stat{background:var(--panel);border:1px solid var(--border-soft);border-radius:9px;padding:6px 11px;text-align:center;min-width:52px}
   .stat b{color:var(--text);font-size:15px;display:block;font-family:var(--sans)}
@@ -275,6 +277,7 @@
       <div>
         <h1>GKE Troubleshooting Vault</h1>
         <div class="sub">topic-wise drills · notes · interview prep · runs offline</div>
+        <div class="sub sync-off" id="syncStatus">○ connecting to sync…</div>
       </div>
     </div>
     <div class="stats">
@@ -376,10 +379,44 @@
 
 <div class="toast" id="toast"></div>
 
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
 <script>
 (function(){
   "use strict";
   const LS_KEY="gke_vault_v9";
+
+  // ============ CLOUD SYNC (Firebase Realtime Database) ============
+  // Free "gke-vault" Firebase project — syncs this vault across every device you open it on.
+  // apiKey below is a public client identifier by Firebase's own design, not a secret;
+  // access is gated by the database's security rules (signed-in sessions only).
+  const firebaseConfig={
+    apiKey:"AIzaSyDqsblfBy8Po3ydNMqTnwpBqFj1iK4YJa4",
+    authDomain:"gke-vault-2b316.firebaseapp.com",
+    databaseURL:"https://gke-vault-2b316-default-rtdb.firebaseio.com",
+    projectId:"gke-vault-2b316",
+    storageBucket:"gke-vault-2b316.firebasestorage.app",
+    messagingSenderId:"697905768456",
+    appId:"1:697905768456:web:9fd4b1a7861bad585d09bd"
+  };
+  let db=null, cloudReady=false;
+  function syncPush(path,val){
+    if(!db||!cloudReady)return;
+    try{db.ref(path).set(JSON.stringify(val));}catch(e){}
+  }
+  try{
+    firebase.initializeApp(firebaseConfig);
+    db=firebase.database();
+    firebase.auth().onAuthStateChanged(user=>{
+      cloudReady=!!user;
+      if(user) startCloudSync();
+    });
+    firebase.auth().signInAnonymously().catch(()=>{});
+  }catch(e){
+    const s=document.getElementById("syncStatus");
+    if(s){s.textContent="○ sync unavailable — local only on this device";s.className="sub sync-off";}
+  }
 
   // ============ SEED ============
   const SEED=[
@@ -839,6 +876,7 @@
   function persistRefEdits(){
     try{localStorage.setItem(REFEDITS_LS_KEY,JSON.stringify(refEdits));}
     catch(e){toast("Can't save in preview — download the file to enable saving");}
+    syncPush("vault/refEditsJson",refEdits);
   }
   let refEdits=loadRefEdits();
   let refEditingKeys={};
@@ -973,6 +1011,7 @@
   function persistNotes(){
     try{localStorage.setItem(NOTES_LS_KEY,JSON.stringify(myNotes));}
     catch(e){toast("Can't save in preview — download the file to enable saving");}
+    syncPush("vault/notesJson",myNotes);
   }
   let myNotes=loadNotes();
   let myNotesOpen={}, myNotesEditing={}, myNotesSearch="";
@@ -1083,6 +1122,7 @@
   let activeTopic = data[0] ? data[0].id : null;
   let editingProblem=null, editingTopicForProblem=null, editingTopic=null;
   let notesEditing={}; // topicId -> bool
+  let currentView="drills"; // which top-level view tab is showing, for targeted re-renders on cloud sync
 
   function load(){
     try{const raw=localStorage.getItem(LS_KEY);if(raw){const p=JSON.parse(raw);if(Array.isArray(p))return p;}}catch(e){}
@@ -1091,6 +1131,7 @@
   function persist(){
     try{localStorage.setItem(LS_KEY,JSON.stringify(data));}
     catch(e){toast("Can't save in preview — download the file to enable saving");}
+    syncPush("vault/dataJson",data);
   }
 
   const $=s=>document.querySelector(s);
@@ -1352,6 +1393,7 @@
       document.querySelectorAll(".vtab").forEach(x=>x.classList.remove("on"));
       t.classList.add("on");
       const v=t.dataset.view;
+      currentView=v;
       $("#drillsView").style.display = v==="drills" ? "" : "none";
       $("#refView").style.display = v==="gke" ? "" : "none";
       $("#kubectlView").style.display = v==="kubectl" ? "" : "none";
@@ -1368,6 +1410,61 @@
     if(e.key==="Escape")closeAll();
     if(e.key==="/"&&!/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)){e.preventDefault();$("#search").focus();}
   });
+
+  // ============ CLOUD SYNC — attach once signed in ============
+  // Each store round-trips as a JSON string (not a native nested object) so command text
+  // containing "/" or "." — invalid in Realtime Database keys — never becomes a path segment.
+  function startCloudSync(){
+    db.ref(".info/connected").on("value",snap=>{
+      const s=$("#syncStatus");
+      if(!s)return;
+      if(snap.val()===true){s.textContent="● synced live — updates here reach every device";s.className="sub sync-on";}
+      else{s.textContent="○ reconnecting… (working from local copy)";s.className="sub sync-off";}
+    });
+    // Deliberately does NOT auto-push local data when the cloud path is empty — a device
+    // with nothing local yet (or a fresh/sandboxed session) must never be able to overwrite
+    // real synced data just by connecting. Cloud only ever changes via an explicit Save click
+    // (see persist/persistNotes/persistRefEdits above), never as a side effect of loading.
+    db.ref("vault/dataJson").on("value",snap=>{
+      const raw=snap.val();
+      if(raw===null)return;
+      try{
+        const v=JSON.parse(raw);
+        if(Array.isArray(v)){
+          data=v;
+          activeTopic=data.find(t=>t.id===activeTopic)?activeTopic:(data[0]?data[0].id:null);
+          try{localStorage.setItem(LS_KEY,JSON.stringify(data));}catch(e){}
+          render();
+        }
+      }catch(e){}
+    });
+    db.ref("vault/notesJson").on("value",snap=>{
+      const raw=snap.val();
+      if(raw===null)return;
+      try{
+        const v=JSON.parse(raw);
+        if(Array.isArray(v)){
+          myNotes=v;
+          try{localStorage.setItem(NOTES_LS_KEY,JSON.stringify(myNotes));}catch(e){}
+          if(currentView==="notes") renderNotes();
+        }
+      }catch(e){}
+    });
+    db.ref("vault/refEditsJson").on("value",snap=>{
+      const raw=snap.val();
+      if(raw===null)return;
+      try{
+        const v=JSON.parse(raw);
+        if(v&&typeof v==="object"){
+          refEdits=v;
+          try{localStorage.setItem(REFEDITS_LS_KEY,JSON.stringify(refEdits));}catch(e){}
+          if(currentView==="gke") renderRef();
+          else if(currentView==="kubectl") renderKubectlRef();
+          else if(currentView==="terraform") renderTerraformRef();
+        }
+      }catch(e){}
+    });
+  }
 
   render();
 })();
