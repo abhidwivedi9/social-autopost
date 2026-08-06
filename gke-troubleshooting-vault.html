@@ -841,6 +841,59 @@
           {label:"Cleanup", code:"kubectl delete namespace drill"}
         ]
       }]
+    },
+    {
+      id:"t-node", name:"Node-Level Pressure & Evictions",
+      desc:"A pod just disappears — no crash loop, no OOM in the usual sense, RESTARTS often still shows 0. It was Evicted: kubelet actively removed it to protect the node from running out of a resource. On Autopilot there's no node shell access, so this shows up and is drilled at the POD's own resource-limit level instead of true node administration.",
+      notes:
+"KEY IDEA, IN PLAIN WORDS — Evicted is NOT the same failure family as CrashLoopBackOff or OOMKilled, even\n"+
+"though it can look similar at a glance (pod gone, Exit Code 137 again). CrashLoopBackOff/OOMKilled are\n"+
+"the CONTAINER failing on its own. Evicted is kubelet PROACTIVELY removing a healthy, still-running pod\n"+
+"to protect the node (or, for a per-container ephemeral-storage limit, to protect the limit itself) —\n"+
+"the pod didn't fail by itself, it got removed from outside.\n\n"+
+"WHY THIS IS DRILLED DIFFERENTLY ON AUTOPILOT: Google manages Autopilot's nodes directly — no SSH/exec\n"+
+"access, no way to safely force real node-wide disk pressure without risking other tenants' workloads on\n"+
+"a shared node. What Autopilot DOES let you control directly is a container's own ephemeral-storage\n"+
+"LIMIT — and kubelet enforces that exactly the same way it would enforce true node-level disk pressure,\n"+
+"just scoped to one pod. It's also the more common REAL version of this incident anyway: a single\n"+
+"runaway container filling up local disk, not the whole node being genuinely out of space.\n\n"+
+"CONFIRMED IN PRACTICE (drill): a container with 'resources.limits.ephemeral-storage: 1Gi' wrote ~1.95GiB\n"+
+"into a plain emptyDir volume (no SizeLimit of its own, so it counts fully against the container's\n"+
+"ephemeral-storage limit). Result: 'kubectl get pods' showed a confusing 'ContainerStatusUnknown' status\n"+
+"— NOT the word 'Evicted' — the real reason only appears in 'kubectl describe', in the top-level Reason\n"+
+"field: 'Reason: Evicted, Message: Pod ephemeral local storage usage exceeds the total limit of\n"+
+"containers 1Gi.' Exit Code on the container was 137 — SAME code as OOMKilled and a liveness-probe kill\n"+
+"from earlier drills. Three different causes, one signal, yet again — 137 just means SIGKILL, full stop.\n\n"+
+"COMMON INTERVIEW Qs\n"+
+"Q: A pod disappears, RESTARTS is 0, Exit Code is 137 — is that always OOMKilled?\n"+
+"A: No — confirmed three separate times now: OOMKilled (memory), a liveness-probe-triggered kill, and\n"+
+"   ephemeral-storage eviction all produce Exit Code 137, because 137 only encodes SIGKILL, not why.\n"+
+"   Always check describe's Reason field (OOMKilled vs Evicted) and Events, never stop at the exit code.\n\n"+
+"Q: 'kubectl get pods' shows STATUS ContainerStatusUnknown — what does that actually mean?\n"+
+"A: It usually means the container was forcibly removed (evicted, or its node/runtime lost track of it)\n"+
+"   before the kubelet could report a clean terminal status. It is NOT a useful diagnosis on its own —\n"+
+"   go straight to 'kubectl describe pod' and read the top-level Reason and Message fields.\n\n"+
+"Q: A pod got Evicted for ephemeral-storage — do you just raise the limit?\n"+
+"A: Same judgment call as OOMKilled: if the usage is real and expected, raise the limit with headroom\n"+
+"   (confirmed, not guessed). If it's unbounded — a log file that's never rotated, a temp-file leak —\n"+
+"   raising the limit only buys time before the identical eviction happens again at a higher number.\n\n"+
+"--- paste your own points / questions from other sites below this line ---\n",
+      problems:[{
+        id:"p-node-1", title:"Pod vanishes, RESTARTS still 0 — ephemeral-storage eviction", difficulty:"standard",
+        tags:["eviction","ephemeral-storage","disk-pressure","exit-137","autopilot"],
+        symptom:"The 'disk-hog' pod in drill was running fine a minute ago. Now 'kubectl get pods' shows it gone from Running — status says something else entirely. It wasn't OOMKilled, it wasn't CrashLoopBackOff, RESTARTS is still 0. What actually happened to it?",
+        hint:"This isn't a memory problem and it isn't a crash. Something is enforcing a different resource limit entirely — and once it's tripped, the pod doesn't restart, it's gone for good under that name.",
+        diagnosis:"get pods -> STATUS shows 'ContainerStatusUnknown', not an obviously useful label. describe pod -> the real answer is at the TOP, not in the container block: 'Status: Failed, Reason: Evicted, Message: Pod ephemeral local storage usage exceeds the total limit of containers 1Gi.' Events confirm: 'Warning Evicted ... exceeds the total limit of containers 1Gi' followed by 'Normal Killing ... Stopping container disk-hog'. Container's Exit Code shows 137 — same SIGKILL code as OOMKilled, misleading if read in isolation.",
+        rootCause:"The container's resources.limits.ephemeral-storage was set to 1Gi, but its command ('dd if=/dev/zero of=/data/bigfile bs=1M count=2000') wrote roughly 1.95GiB into a plain emptyDir volume mounted at /data. A plain emptyDir with no SizeLimit of its own counts fully against the container's ephemeral-storage limit, so total local-disk usage blew well past the 1Gi ceiling. kubelet's eviction manager actively monitors this and killed the pod specifically to enforce that limit — this is intentional protective behavior, not a bug or a crash.",
+        fix:"If ~2GB of scratch space is genuinely expected usage, raise the ephemeral-storage limit to comfortably cover it (with headroom, same principle as sizing a memory limit). If the usage is actually unbounded — an app writing logs or temp files without ever cleaning them up — raising the limit only delays the identical eviction at a higher threshold; fix what's writing the data instead.",
+        mental:"Evicted is a different failure family from CrashLoopBackOff/OOMKilled — the container didn't fail on its own, kubelet proactively removed a still-healthy pod to protect a resource limit. The tell in 'kubectl get pods' is often a vague status like ContainerStatusUnknown, not the word 'Evicted' itself — always confirm with 'kubectl describe pod' and read the top-level Reason/Message fields, not just the container's exit code. And once again: Exit Code 137 by itself proves nothing beyond 'something sent SIGKILL' — OOM, a failed liveness probe, and ephemeral-storage eviction all produce the identical code.",
+        commands:[
+          {label:"Setup (break it)", code:"kubectl create namespace drill\nkubectl -n drill run disk-hog --image=busybox --restart=Never --overrides='{\"spec\":{\"containers\":[{\"name\":\"disk-hog\",\"image\":\"busybox\",\"command\":[\"sh\",\"-c\",\"dd if=/dev/zero of=/data/bigfile bs=1M count=2000; sleep 3600\"],\"resources\":{\"limits\":{\"ephemeral-storage\":\"1Gi\"}},\"volumeMounts\":[{\"name\":\"scratch\",\"mountPath\":\"/data\"}]}],\"volumes\":[{\"name\":\"scratch\",\"emptyDir\":{}}]}}'"},
+          {label:"Diagnose", code:"sleep 60\nkubectl get pods -n drill                          # STATUS: ContainerStatusUnknown — not obviously 'Evicted'\nkubectl describe pod disk-hog -n drill             # top-level Reason: Evicted, Message names the exact limit exceeded"},
+          {label:"Fix", code:"kubectl -n drill delete pod disk-hog\nkubectl -n drill run disk-hog --image=busybox --restart=Never --overrides='{\"spec\":{\"containers\":[{\"name\":\"disk-hog\",\"image\":\"busybox\",\"command\":[\"sh\",\"-c\",\"dd if=/dev/zero of=/data/bigfile bs=1M count=2000; sleep 3600\"],\"resources\":{\"limits\":{\"ephemeral-storage\":\"3Gi\"}},\"volumeMounts\":[{\"name\":\"scratch\",\"mountPath\":\"/data\"}]}],\"volumes\":[{\"name\":\"scratch\",\"emptyDir\":{}}]}}'\nsleep 30\nkubectl get pods -n drill                          # 1/1 Running, stays up — limit now covers real usage"},
+          {label:"Cleanup", code:"kubectl delete namespace drill"}
+        ]
+      }]
     }
   ];
 
