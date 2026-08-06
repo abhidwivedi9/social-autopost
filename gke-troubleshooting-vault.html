@@ -1181,9 +1181,30 @@
   let notesEditing={}; // topicId -> bool
   let currentView="drills"; // which top-level view tab is showing, for targeted re-renders on cloud sync
 
+  // Folds any SEED topics/problems that aren't yet present (by id) into saved data,
+  // so a new scenario added to the file's SEED still shows up once real synced data
+  // already exists — without ever touching or overwriting anything the user has.
+  function mergeSeed(arr){
+    SEED.forEach(seedTopic=>{
+      const existing=arr.find(t=>t.id===seedTopic.id);
+      if(!existing){
+        arr.push(JSON.parse(JSON.stringify(seedTopic)));
+      }else{
+        existing.problems=existing.problems||[];
+        (seedTopic.problems||[]).forEach(seedProb=>{
+          if(!existing.problems.find(p=>p.id===seedProb.id)){
+            existing.problems.push(JSON.parse(JSON.stringify(seedProb)));
+          }
+        });
+      }
+    });
+    return arr;
+  }
   function load(){
-    try{const raw=localStorage.getItem(LS_KEY);if(raw){const p=JSON.parse(raw);if(Array.isArray(p))return p;}}catch(e){}
-    return JSON.parse(JSON.stringify(SEED));
+    let base=null;
+    try{const raw=localStorage.getItem(LS_KEY);if(raw){const p=JSON.parse(raw);if(Array.isArray(p))base=p;}}catch(e){}
+    if(!base)base=JSON.parse(JSON.stringify(SEED));
+    return mergeSeed(base);
   }
   function persist(){
     try{localStorage.setItem(LS_KEY,JSON.stringify(data));}
@@ -1488,7 +1509,7 @@
       try{
         const v=JSON.parse(raw);
         if(Array.isArray(v)){
-          data=v;
+          data=mergeSeed(v);
           activeTopic=data.find(t=>t.id===activeTopic)?activeTopic:(data[0]?data[0].id:null);
           try{localStorage.setItem(LS_KEY,JSON.stringify(data));}catch(e){}
           render();
