@@ -657,6 +657,66 @@
           {label:"Cleanup", code:"kubectl delete namespace drill"}
         ]
       }]
+    },
+    {
+      id:"t-config", name:"ConfigMap & Secret Live-Update Gotchas",
+      desc:"You update a ConfigMap and the running pod keeps behaving like nothing changed — no crash, no error, nothing in the logs. The pod isn't broken; it just never found out. Whether it ever does depends entirely on HOW the ConfigMap was plugged into the container.",
+      notes:
+"KEY IDEA, IN PLAIN ENGLISH — a ConfigMap is a notice board. How a pod reads it decides whether it ever\n"+
+"sees updates to that board after it's already in the room:\n"+
+"  • envFrom / env (environment variable)  -> like handing someone a STICKY NOTE the moment they walk in.\n"+
+"    Whatever's written on it at that second is what they carry for the whole meeting. Nobody comes back\n"+
+"    to hand them a new one just because the board outside changed. NEVER updates. Only a restart\n"+
+"    ('kubectl rollout restart') hands the container a fresh sticky note.\n"+
+"  • volume mount (whole ConfigMap as a directory)  -> like being able to WALK OVER AND READ THE BOARD\n"+
+"    ITSELF whenever you want. kubelet keeps the mounted files in sync with the ConfigMap, roughly once\n"+
+"    a minute. Updates LIVE, no restart needed — but not instantly, there's a real sync delay.\n"+
+"  • volume mount with subPath  -> looks identical to the above, but subPath copies the file's CONTENT\n"+
+"    in at mount time and never re-links it to the live ConfigMap afterward. Same 'looks like it should\n"+
+"    update live' trap as env vars, just less obvious, because it IS a volume mount. NEVER updates.\n\n"+
+"CONFIRMED IN PRACTICE (drill):\n"+
+"  envFrom            -> exec'd into the pod right after patching the ConfigMap: still the OLD value,\n"+
+"                         forever, until 'kubectl rollout restart'.\n"+
+"  volume mount        -> checked immediately after patching: still old. Checked again ~75s later,\n"+
+"                         no restart in between: NEW value. Confirms the ~1 minute kubelet sync delay.\n"+
+"  volume mount+subPath -> same ConfigMap, same wait, checked again after 75s+: still OLD. subPath\n"+
+"                         silently breaks the live-update mechanism that a plain mount gets for free.\n\n"+
+"Secrets behave exactly the same way as ConfigMaps here — envFrom/env from a Secret is just as frozen\n"+
+"at container start as it is for a ConfigMap; only volume-mounted Secrets (without subPath) update live.\n\n"+
+"COMMON INTERVIEW Qs\n"+
+"Q: You updated a ConfigMap and the app still shows the old value — what's your first question?\n"+
+"A: How is the pod consuming it — env var or volume mount? That single fact decides everything else.\n"+
+"   Env var: it will NEVER update without a restart, full stop. Volume mount: give it up to ~60-90s\n"+
+"   before assuming something's actually wrong.\n\n"+
+"Q: A ConfigMap is volume-mounted, you've waited two minutes, and it STILL hasn't updated — now what?\n"+
+"A: Check the mount for subPath. It's the single most common reason a volume mount that 'should' be\n"+
+"   live isn't — subPath quietly disables the live-update mechanism.\n\n"+
+"Q: Why would anyone use subPath if it breaks live updates?\n"+
+"A: subPath is for mounting a SINGLE file into a directory that already has other files in it, without\n"+
+"   the ConfigMap volume overwriting the rest of that directory. It's a legitimate, common need — the\n"+
+"   live-update loss is a side effect most people don't realize they're signing up for.\n\n"+
+"Q: Does the same logic apply to Secrets?\n"+
+"A: Yes, identically. envFrom/env from a Secret is a one-time snapshot just like a ConfigMap; only a\n"+
+"   plain volume mount (no subPath) gets live updates.\n\n"+
+"--- paste your own points / questions from other sites below this line ---\n",
+      problems:[{
+        id:"p-cfg-1", title:"ConfigMap says 'on', app still thinks it's 'off'", difficulty:"hard",
+        tags:["configmap","secrets","env-vars","volume-mount","subpath"],
+        symptom:"The 'config-app' deployment in drill reads a FEATURE_FLAG value from a ConfigMap. On-call updated the ConfigMap ten minutes ago to flip the flag on — 'kubectl get configmap' confirms the new value is definitely saved. But the app is still behaving like the flag is off. No crashes, no restarts, no errors anywhere. What's going on?",
+        hint:"The ConfigMap definitely has the new value. So the real question is: where does the running container actually get ITS copy of that value from, and when does it read it — once, or continuously?",
+        diagnosis:"get configmap app-config -o yaml -> FEATURE_FLAG really is 'on'. exec into the pod and check its actual environment ('env | grep FEATURE_FLAG') -> still shows 'off'. Comparing the pod's start time against when the ConfigMap was patched shows the pod started BEFORE the update — it was handed its environment at boot and nothing since then has told it to re-read anything.",
+        rootCause:"In plain terms: an environment variable sourced from a ConfigMap (via envFrom or env/valueFrom) is like a sticky note handed to the container the instant it starts — whatever the ConfigMap said AT THAT MOMENT is what gets baked in, permanently, for that container's lifetime. Updating the ConfigMap afterward changes the noticeboard, not the sticky note already in the container's hand, and nothing in Kubernetes automatically walks over and swaps it out. This is true even though 'kubectl get configmap' correctly shows the new value — the ConfigMap object itself is fine; the already-running container just never looks at it again after boot.",
+        fix:"Force a new container start so it re-reads the (now-updated) ConfigMap fresh: 'kubectl rollout restart deployment/config-app'. For a real production fix, prefer volume-mounting the ConfigMap instead of using env vars wherever the app can tolerate reading a file — that gets you live updates (roughly a 1-minute kubelet sync delay) with zero restarts, as long as the mount does NOT use subPath, which silently disables that same live-update behavior and puts you right back in 'frozen forever' territory.",
+        mental:"Three ways to consume the same ConfigMap, three different outcomes — memorize this table: envFrom/env = frozen at container start, restart required, ever; plain volume mount = live updates, ~1 minute lag, no restart needed; volume mount + subPath = looks like a live mount but is actually frozen too, same trap as env vars in disguise. Secrets follow the identical rule — this isn't ConfigMap-specific, it's about env-vars-vs-volumes in general. The single fastest diagnostic question for 'config update isn't taking effect': how is it being consumed, not whether the ConfigMap itself is correct.",
+        commands:[
+          {label:"Setup (break it) — env var version", code:"kubectl create namespace drill\nkubectl -n drill create configmap app-config --from-literal=FEATURE_FLAG=off\nkubectl -n drill create deployment config-app --image=nginx:alpine --replicas=1\nkubectl -n drill patch deployment config-app --type=json -p='[{\"op\":\"add\",\"path\":\"/spec/template/spec/containers/0/envFrom\",\"value\":[{\"configMapRef\":{\"name\":\"app-config\"}}]}]'\nkubectl rollout status deployment/config-app -n drill\n# simulate the \"on-call update, ten minutes later\":\nkubectl -n drill patch configmap app-config --type=merge -p '{\"data\":{\"FEATURE_FLAG\":\"on\"}}'"},
+          {label:"Diagnose — env var version", code:"kubectl get configmap app-config -n drill -o yaml                 # confirms FEATURE_FLAG: \"on\" in the ConfigMap itself\nkubectl exec -n drill deploy/config-app -- env | grep FEATURE_FLAG # still shows FEATURE_FLAG=off — the mismatch"},
+          {label:"Fix — env var version", code:"kubectl rollout restart deployment/config-app -n drill\nkubectl rollout status deployment/config-app -n drill\nkubectl exec -n drill deploy/config-app -- env | grep FEATURE_FLAG # now shows FEATURE_FLAG=on"},
+          {label:"Bonus test — plain volume mount (updates live, no restart)", code:"kubectl -n drill patch configmap app-config --type=merge -p '{\"data\":{\"FEATURE_FLAG\":\"off\"}}'\nkubectl -n drill patch deployment config-app --type=json -p='[\n  {\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/envFrom\",\"value\":[]},\n  {\"op\":\"add\",\"path\":\"/spec/template/spec/containers/0/volumeMounts\",\"value\":[{\"name\":\"config-vol\",\"mountPath\":\"/etc/config\"}]},\n  {\"op\":\"add\",\"path\":\"/spec/template/spec/volumes\",\"value\":[{\"name\":\"config-vol\",\"configMap\":{\"name\":\"app-config\"}}]}\n]'\nkubectl rollout status deployment/config-app -n drill\nkubectl exec -n drill deploy/config-app -- cat /etc/config/FEATURE_FLAG   # off\nkubectl -n drill patch configmap app-config --type=merge -p '{\"data\":{\"FEATURE_FLAG\":\"on\"}}'\nkubectl exec -n drill deploy/config-app -- cat /etc/config/FEATURE_FLAG   # still off, checked immediately\nsleep 75\nkubectl exec -n drill deploy/config-app -- cat /etc/config/FEATURE_FLAG   # now on — no restart happened"},
+          {label:"Bonus test — same mount, but with subPath (breaks live updates again)", code:"kubectl -n drill patch configmap app-config --type=merge -p '{\"data\":{\"FEATURE_FLAG\":\"off\"}}'\nkubectl -n drill patch deployment config-app --type=json -p='[{\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/volumeMounts\",\"value\":[{\"name\":\"config-vol\",\"mountPath\":\"/etc/config/FEATURE_FLAG\",\"subPath\":\"FEATURE_FLAG\"}]}]'\nkubectl rollout status deployment/config-app -n drill\nkubectl exec -n drill deploy/config-app -- cat /etc/config/FEATURE_FLAG   # off\nkubectl -n drill patch configmap app-config --type=merge -p '{\"data\":{\"FEATURE_FLAG\":\"on\"}}'\nsleep 75\nkubectl exec -n drill deploy/config-app -- cat /etc/config/FEATURE_FLAG   # still off — subPath broke the live sync"},
+          {label:"Cleanup", code:"kubectl delete namespace drill"}
+        ]
+      }]
     }
   ];
 
