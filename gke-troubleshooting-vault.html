@@ -600,6 +600,63 @@
           {label:"Cleanup", code:"kubectl delete namespace drill"}
         ]
       }]
+    },
+    {
+      id:"t-pending", name:"Pending & Unschedulable Pods",
+      desc:"The pod never even starts — READY 0/1, STATUS Pending, no container ever runs, so there are no logs at all. The answer lives in the pod's Conditions/Events and in what the cluster-autoscaler decided, not in anything the app did.",
+      notes:
+"KEY IDEA — Pending does NOT automatically mean 'wait for autoscaling.' Two Pending pods can look identical\n"+
+"in 'kubectl get pods' and mean completely opposite things:\n"+
+"  • genuinely transient -> autoscaler is actively provisioning a node -> resolves in a minute or two\n"+
+"  • permanently stuck    -> the constraint can NEVER be satisfied by any node -> waiting fixes nothing\n\n"+
+"THE TELL: read the Events, specifically who says what:\n"+
+"  scheduler event  'FailedScheduling: 0/N nodes are available...'      -> no CURRENT node matches\n"+
+"  autoscaler event 'TriggeredScaleUp'                                  -> actively trying to fix it, wait\n"+
+"  autoscaler event 'NotTriggerScaleUp'                                 -> it looked and REFUSED to try\n"+
+"  annotation 'cloud.google.com/cluster_autoscaler_unhelpable_until: Inf' -> permanent verdict, in writing\n\n"+
+"GKE AUTOPILOT GUARDRAILS — most 'break the schedule' mistakes get REJECTED before they ever become a\n"+
+"pod, instead of silently sitting Pending like on Standard GKE. Three real ones hit during practice:\n"+
+"  1. Arbitrary/custom nodeSelector key (e.g. 'disktype') -> rejected at admission by GKE Warden.\n"+
+"     Autopilot only allows a specific label-key allowlist (cloud.google.com/compute-class,\n"+
+"     cloud.google.com/gke-accelerator, topology.kubernetes.io/zone, etc. — see error for full list).\n"+
+"  2. Resource request above the per-pod ceiling (this cluster: 30 CPU / 110Gi memory) -> rejected at\n"+
+"     admission, 'higher than the Autopilot maximum'. Never even reaches Pending.\n"+
+"  3. A GPU nodeSelector (cloud.google.com/gke-accelerator) WITHOUT an actual GPU resource request on\n"+
+"     the container -> rejected: 'not allowed on workloads that do not request GPU'.\n"+
+"  -> To actually reproduce a genuine, permanent Pending on Autopilot, use an ALLOWED key with an\n"+
+"     IMPOSSIBLE value instead, e.g. topology.kubernetes.io/zone set to a zone that doesn't exist.\n"+
+"     Warden only validates the KEY is on its allowlist, not that the VALUE corresponds to anything real.\n\n"+
+"COMMON INTERVIEW Qs\n"+
+"Q: A pod's Pending and someone says 'just wait, autoscaler will handle it' — how do you know if that's true?\n"+
+"A: Don't guess — read the autoscaler's own event. TriggeredScaleUp means trust it. NotTriggerScaleUp\n"+
+"   (or an 'unhelpable_until: Inf' annotation) means it already gave up; only a spec fix will help.\n\n"+
+"Q: Why does GKE Autopilot reject some bad specs immediately instead of leaving them Pending?\n"+
+"A: Autopilot runs an admission webhook (GKE Warden) that validates certain fields — like node-selector\n"+
+"   keys and per-pod resource ceilings — at request time, before the object is even persisted. Standard\n"+
+"   GKE has no such gate, so the same mistake there would just sit Pending with FailedScheduling events\n"+
+"   instead of being rejected outright.\n\n"+
+"Q: What's the fastest way to prove a Pending pod can never schedule, without waiting it out?\n"+
+"A: 'kubectl describe pod' — check Conditions for 'PodScheduled: False', check Events for repeated\n"+
+"   identical FailedScheduling reasons with NO progress between them, and check for the\n"+
+"   cluster_autoscaler_unhelpable_until annotation. Repetition with zero change = stuck, not slow.\n\n"+
+"--- paste your own points / questions from other sites below this line ---\n",
+      problems:[{
+        id:"p-sched-1", title:"Pending forever — a zone that doesn't exist", difficulty:"hard",
+        tags:["pending","autopilot","node-affinity","cluster-autoscaler","scheduling","warden"],
+        symptom:"The 'stuck-pod' deployment in drill was applied over 20 minutes ago. READY is 0/1, STATUS Pending. Someone in the team channel says 'relax, Autopilot's probably just spinning up a node for it, give it a few more minutes.' Do you wait, or is something actually wrong?",
+        hint:"Don't just wait it out. There's a real difference between 'the autoscaler is actively working on this' and 'this pod can never be scheduled, no matter how long you wait' — and the Events tell you which one you're looking at.",
+        diagnosis:"get pods -n drill -> stuck-pod is 0/1 Pending, climbing in age with no change. describe pod -> Conditions show 'PodScheduled: False'. Events show repeated 'FailedScheduling: 0/N nodes are available: N node(s) didn't match Pod's node affinity/selector' — same reason, over and over, no progress. Critically, the autoscaler's own events say 'NotTriggerScaleUp' (not 'TriggeredScaleUp'), and the pod carries the annotation 'cloud.google.com/cluster_autoscaler_unhelpable_until: Inf'. Node-Selectors shows 'topology.kubernetes.io/zone=asia-south1-z' — but the cluster's real zones are only -a, -b, -c.",
+        rootCause:"The deployment's nodeSelector requests a zone (asia-south1-z) that does not exist anywhere on GCP — a fabricated value, not a real capacity constraint. The scheduler correctly finds zero matching nodes every time it checks, and the cluster-autoscaler correctly concludes it can never create a matching node either (since no such zone exists to create one in), so it explicitly marks the pod unhelpable rather than repeatedly retrying. This is fundamentally different from a real NAP delay, where the autoscaler IS actively provisioning and the pod resolves within a minute or two.",
+        fix:"Remove (or correct) the impossible nodeSelector so the pod template no longer references a nonexistent zone. Once removed, the Deployment controller rolls a new/matching ReplicaSet whose pods have no impossible constraint and schedule normally onto existing nodes.",
+        mental:"Same starting symptom (Pending) can mean two opposite things — the deciding signal is the autoscaler's own verdict, not how long you've waited. TriggeredScaleUp = actively fixing itself, let it run. NotTriggerScaleUp + 'unhelpable_until: Inf' = already gave up, permanently — only a spec change fixes it. Bonus finding: GKE Autopilot's Warden webhook actively rejects several classes of impossible spec (arbitrary nodeSelector keys, over-ceiling resource requests, GPU selector without GPU request) at admission time rather than letting them sit Pending — so on Autopilot specifically, if something rejects outright with a clear error, that's Warden doing you a favor, not a bug.",
+        commands:[
+          {label:"Setup (break it)", code:"kubectl create namespace drill\nkubectl -n drill create deployment stuck-pod --image=nginx:alpine --replicas=1\n# an impossible (but admission-allowed) constraint: a zone that doesn't exist in this region\nkubectl -n drill patch deployment stuck-pod --type=json -p='[{\"op\":\"add\",\"path\":\"/spec/template/spec/nodeSelector\",\"value\":{\"topology.kubernetes.io/zone\":\"asia-south1-z\"}}]'"},
+          {label:"Diagnose", code:"kubectl get pods -n drill                                          # 0/1 Pending, age keeps climbing\nkubectl describe pod -n drill -l app=stuck-pod                     # Conditions: PodScheduled False\n                                                                     # Annotations: cluster_autoscaler_unhelpable_until: Inf\n                                                                     # Events: FailedScheduling (repeats) + NotTriggerScaleUp\nkubectl get pod -n drill -l app=stuck-pod -o jsonpath='{.items[0].spec.nodeSelector}'   # confirm the bad value"},
+          {label:"Fix", code:"kubectl -n drill patch deployment stuck-pod --type=json -p='[{\"op\":\"remove\",\"path\":\"/spec/template/spec/nodeSelector\"}]'\nkubectl rollout status deployment/stuck-pod -n drill\nkubectl get pods -n drill                                          # 1/1 Running"},
+          {label:"What Autopilot rejects outright (no setup needed — try these to see the guardrails)", code:"# arbitrary nodeSelector key -> rejected by GKE Warden (autogke-node-affinity-selector-limitation)\nkubectl -n drill patch deployment stuck-pod --type=json -p='[{\"op\":\"add\",\"path\":\"/spec/template/spec/nodeSelector\",\"value\":{\"disktype\":\"ssd\"}}]'\n\n# resource request above the per-pod ceiling -> rejected (autogke-pod-limit-constraints)\nkubectl -n drill patch deployment stuck-pod --type=json -p='[{\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/resources\",\"value\":{\"requests\":{\"cpu\":\"1000\",\"memory\":\"1000Gi\"}}}]'\n\n# GPU selector without a GPU resource request -> rejected (autogke-gpu-limitation)\nkubectl -n drill patch deployment stuck-pod --type=json -p='[{\"op\":\"add\",\"path\":\"/spec/template/spec/nodeSelector\",\"value\":{\"cloud.google.com/gke-accelerator\":\"nvidia-tesla-v100\"}}]'"},
+          {label:"Cleanup", code:"kubectl delete namespace drill"}
+        ]
+      }]
     }
   ];
 
