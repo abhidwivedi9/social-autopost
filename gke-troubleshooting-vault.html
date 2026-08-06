@@ -717,6 +717,71 @@
           {label:"Cleanup", code:"kubectl delete namespace drill"}
         ]
       }]
+    },
+    {
+      id:"t-rbac", name:"RBAC & Workload Identity",
+      desc:"A pod is 'set up' to authenticate to Google Cloud — the annotations are there, everything looks connected — but every real API call fails with a permission error. Two separate systems (Kubernetes and Google IAM) both have to agree, and it's easy to configure only one of them.",
+      notes:
+"KEY IDEA, IN PLAIN WORDS — Workload Identity connects a Kubernetes ServiceAccount (KSA) to a real Google\n"+
+"Cloud service account (GSA) so pods can call GCP APIs without a downloaded key file. Setting it up is\n"+
+"TWO separate steps, in TWO separate systems, and doing only one of them LOOKS finished but isn't:\n"+
+"  1. kubectl annotate serviceaccount KSA iam.gke.io/gcp-service-account=GSA_EMAIL\n"+
+"     -> tells KUBERNETES which GSA this KSA should claim to be. Purely a Kubernetes-side note.\n"+
+"  2. gcloud iam service-accounts add-iam-policy-binding GSA_EMAIL --role roles/iam.workloadIdentityUser\n"+
+"     --member \"serviceAccount:PROJECT.svc.id.goog[NAMESPACE/KSA]\"\n"+
+"     -> tells GOOGLE IAM that this specific KSA identity is ALLOWED to actually use that GSA. This is\n"+
+"     the approval step, and it lives entirely outside Kubernetes — kubectl can't see or set it.\n"+
+"Skip step 2 and step 1 alone gives you a pod that CLAIMS an identity nothing has approved it to use.\n\n"+
+"THE TELL, CONFIRMED IN PRACTICE (drill):\n"+
+"  'gcloud auth list' inside the pod -> showed the RIGHT identity (drill-gsa@...) — the annotation (step 1)\n"+
+"  was working fine. The claim was correct; nothing was wrong with it.\n"+
+"  'gcloud projects get-iam-policy ...' -> crashed with a DIFFERENT, unrelated error: 'MetadataServerException\n"+
+"  ... metadata server is concealed'. This is a real, separate gcloud-CLI-on-GKE quirk (metadata\n"+
+"  concealment) — the full gcloud CLI makes extra internal metadata calls that GKE blocks for security,\n"+
+"  independent of any IAM issue. It affects the gcloud CLI specifically, not apps using client libraries.\n"+
+"  Bypassing gcloud and hitting the metadata server directly (the way a real app/library would) —\n"+
+"  'curl -H \"Metadata-Flavor: Google\" http://metadata.google.internal/computeMetadata/v1/instance/\n"+
+"  service-accounts/default/token' — got straight past that noise, to the REAL error underneath:\n"+
+"  'Unable to generate access token; IAM returned 403 Forbidden: Permission\n"+
+"  iam.serviceAccounts.getAccessToken denied ... This error could be caused by a missing IAM policy\n"+
+"  binding on the target IAM service account.' — Google's own error message names the exact cause.\n"+
+"  After adding the missing 'roles/iam.workloadIdentityUser' binding, the identical token request\n"+
+"  succeeded — a real JSON blob with an access_token came back, no restart or redeploy needed.\n\n"+
+"COMMON INTERVIEW Qs\n"+
+"Q: A pod's ServiceAccount is annotated for Workload Identity but GCP API calls still fail — where do\n"+
+"   you look first?\n"+
+"A: Whether the IAM-side binding exists — 'roles/iam.workloadIdentityUser' granted to\n"+
+"   'PROJECT.svc.id.goog[NAMESPACE/KSA]' on the target GSA. The annotation alone only configures the\n"+
+"   Kubernetes side of the handshake; IAM has to separately approve it.\n\n"+
+"Q: Inside a GKE pod, 'gcloud' commands fail with a metadata-server-concealed error even though\n"+
+"   Workload Identity is set up correctly — is that an auth bug?\n"+
+"A: No — that's a known gcloud-CLI-specific issue on GKE (metadata concealment blocks some of the extra\n"+
+"   metadata queries the full CLI makes). It's unrelated to whether the IAM binding is correct. Test the\n"+
+"   underlying credential directly against the metadata server (or with a client library) instead of\n"+
+"   trusting the gcloud CLI's behavior inside a pod.\n\n"+
+"Q: What's the practical difference between 'authentication failure' and 'authorization failure' here?\n"+
+"A: A missing workloadIdentityUser binding is an AUTHENTICATION failure — the pod can't even obtain a\n"+
+"   valid token for the GSA at all (403 on getAccessToken itself). A GSA that has a valid token but\n"+
+"   lacks a specific IAM role (e.g. storage.objectViewer) on a resource is an AUTHORIZATION failure —\n"+
+"   the token works, the identity is real, but that identity still isn't allowed to do the specific\n"+
+"   thing being attempted. Same 403-shaped symptom, different layer, different fix.\n\n"+
+"--- paste your own points / questions from other sites below this line ---\n",
+      problems:[{
+        id:"p-rbac-1", title:"Annotated for Workload Identity, still gets 403 everywhere", difficulty:"hard",
+        tags:["rbac","workload-identity","iam","service-account","gcloud"],
+        symptom:"The 'wi-test' pod in drill is set up to authenticate to Google Cloud using Workload Identity — its ServiceAccount (drill-ksa) is annotated to impersonate a real GCP service account (drill-gsa). But every gcloud command run inside the pod fails with a permission/auth error. The annotation is definitely there — 'kubectl describe sa' confirms it. What's missing?",
+        hint:"Being ANNOTATED to impersonate a GSA and being ALLOWED to impersonate that GSA are two separate steps in two separate systems. One (Kubernetes) says what identity to claim. The other (Google IAM) says whether that claim is actually approved. Also: if the full gcloud CLI itself crashes with a 'metadata server concealed' error, that's a distraction, not the real answer — go around it and talk to the metadata server directly.",
+        diagnosis:"'gcloud auth list' inside the pod correctly shows drill-gsa@... as the active account — the Kubernetes-side annotation is fine. 'gcloud projects get-iam-policy' crashes with an unrelated MetadataServerException (gcloud-CLI-on-GKE metadata concealment, not an IAM problem). Bypassing gcloud with a direct metadata-server curl for a token instead ('.../service-accounts/default/token') surfaces the real signal: 'Unable to generate access token; IAM returned 403 Forbidden: Permission iam.serviceAccounts.getAccessToken denied ... This error could be caused by a missing IAM policy binding on the target IAM service account.'",
+        rootCause:"Workload Identity setup has two independent halves. The Kubernetes-side annotation (iam.gke.io/gcp-service-account=...) was done correctly — it tells the KSA which GSA to claim. But the Google IAM-side approval (granting roles/iam.workloadIdentityUser to the specific KSA identity string, on the GSA) was never done — so IAM has no record of authorizing this KSA to actually obtain credentials for that GSA. Annotating a claim and being permitted to make that claim are enforced by two completely different systems, and doing only the first one produces a pod that LOOKS fully configured while being unable to authenticate at all.",
+        fix:"Grant the missing IAM binding: 'gcloud iam service-accounts add-iam-policy-binding GSA_EMAIL --role roles/iam.workloadIdentityUser --member \"serviceAccount:PROJECT.svc.id.goog[NAMESPACE/KSA_NAME]\"'. No redeploy or pod restart required — re-requesting a token from the metadata server immediately succeeds once the binding exists, since the pod was never misconfigured, IAM was just never told to allow it.",
+        mental:"Workload Identity failures split into two distinct layers, and the fix depends on which one you're in: (1) can't get a token at all (this drill) = authentication failure = missing workloadIdentityUser binding, almost always. (2) gets a token fine but a specific API call still 403s = authorization failure = the GSA itself lacks the actual IAM role for that resource — a completely different, later fix. Also remember: the gcloud CLI misbehaving inside a GKE pod (metadata concealment) is a known red herring — test the metadata server directly before concluding anything about IAM.",
+        commands:[
+          {label:"Setup (break it) — annotate but don't grant the IAM binding", code:"kubectl create namespace drill\nkubectl create serviceaccount drill-ksa -n drill\n\n# create a real GCP service account for this drill\ngcloud iam service-accounts create drill-gsa --display-name=\"Drill Workload Identity test SA\" --project=terraform-gke-learning\n\n# link KSA -> GSA on the Kubernetes side (this part IS done correctly)\nkubectl annotate serviceaccount drill-ksa -n drill iam.gke.io/gcp-service-account=drill-gsa@terraform-gke-learning.iam.gserviceaccount.com\n\n# INTENTIONALLY MISSING: the IAM-side binding that actually allows drill-ksa to impersonate drill-gsa\n\n# deploy a pod using this KSA, with gcloud + curl available inside it\nkubectl -n drill run wi-test --image=google/cloud-sdk:slim --restart=Never --overrides='{\"spec\":{\"serviceAccountName\":\"drill-ksa\"}}' -- sleep 3600\nkubectl wait -n drill --for=condition=Ready pod/wi-test --timeout=90s"},
+          {label:"Diagnose", code:"kubectl exec -n drill wi-test -- gcloud auth list                          # correct identity shown — annotation is fine\nkubectl exec -n drill wi-test -- gcloud projects get-iam-policy terraform-gke-learning\n  # crashes: MetadataServerException — a gcloud-CLI-on-GKE quirk, NOT the real answer, ignore it\n\n# bypass gcloud entirely, talk to the metadata server directly like a real app/library would:\nkubectl exec -n drill wi-test -- sh -c 'curl -s -H \"Metadata-Flavor: Google\" \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email\"'\nkubectl exec -n drill wi-test -- sh -c 'curl -s -H \"Metadata-Flavor: Google\" \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token\"'\n  # 403: 'Unable to generate access token ... missing IAM policy binding on the target IAM service account'"},
+          {label:"Fix", code:"gcloud iam service-accounts add-iam-policy-binding drill-gsa@terraform-gke-learning.iam.gserviceaccount.com \\\n  --role roles/iam.workloadIdentityUser \\\n  --member \"serviceAccount:terraform-gke-learning.svc.id.goog[drill/drill-ksa]\" \\\n  --project=terraform-gke-learning\n\n# no restart needed — re-request the token, same pod, same command:\nkubectl exec -n drill wi-test -- sh -c 'curl -s -H \"Metadata-Flavor: Google\" \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token\"'\n  # now returns a real {\"access_token\":\"...\",\"expires_in\":...,\"token_type\":\"Bearer\"} — fixed"},
+          {label:"Cleanup", code:"kubectl delete namespace drill\ngcloud iam service-accounts delete drill-gsa@terraform-gke-learning.iam.gserviceaccount.com --project=terraform-gke-learning --quiet"}
+        ]
+      }]
     }
   ];
 
