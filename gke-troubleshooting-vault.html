@@ -782,6 +782,65 @@
           {label:"Cleanup", code:"kubectl delete namespace drill\ngcloud iam service-accounts delete drill-gsa@terraform-gke-learning.iam.gserviceaccount.com --project=terraform-gke-learning --quiet"}
         ]
       }]
+    },
+    {
+      id:"t-storage", name:"Storage & PersistentVolumeClaims",
+      desc:"A PVC and the pod using it are both stuck Pending — nothing crashed, nothing errored loudly, but nothing ever binds either. The answer lives in the PVC's own Events, and in whether the requested access mode is something the underlying storage type can physically provide.",
+      notes:
+"KEY IDEA, IN PLAIN WORDS — a PersistentVolumeClaim (PVC) is a REQUEST for storage; it only becomes real\n"+
+"once something (a StorageClass's provisioner) actually creates a matching disk. Two ways that request\n"+
+"can be impossible to satisfy, both of which look identical at first glance (PVC stuck Pending):\n"+
+"  1. Typo'd/nonexistent StorageClass name -> nothing can ever provision, because nothing knows how.\n"+
+"  2. A REAL StorageClass, but an access mode it doesn't support -> provisioning is attempted and\n"+
+"     explicitly REJECTED, not just delayed.\n\n"+
+"ACCESS MODES, IN PLAIN WORDS:\n"+
+"  ReadWriteOnce (RWO)  -> one node at a time can mount it for read/write. This is what a normal disk\n"+
+"                          (GCE Persistent Disk) is — physically, a block device attached to one VM.\n"+
+"  ReadWriteMany (RWX)  -> many pods, potentially on many different nodes, mount and write at once.\n"+
+"                          Regular Persistent Disks CANNOT do this — it needs a real network filesystem\n"+
+"                          (e.g. Filestore-backed storage), a fundamentally different technology.\n"+
+"  Asking a Persistent-Disk-backed StorageClass for RWX isn't a config mistake Kubernetes can silently\n"+
+"  work around — it's asking a single-attach block device to behave like a shared network drive.\n\n"+
+"WHY THE FAILURE IS DELAYED (CONFIRMED IN PRACTICE): the default StorageClass uses 'WaitForFirstConsumer'\n"+
+"binding mode — Kubernetes deliberately provisions NOTHING until a pod that actually uses the PVC gets\n"+
+"scheduled (Events: 'WaitForFirstConsumer' -> 'WaitForPodScheduled'). Only once a pod is scheduled does\n"+
+"the CSI driver's CreateVolume call run — and THAT's the exact moment an impossible request gets\n"+
+"rejected: 'ProvisioningFailed ... VolumeCapabilities is invalid: specified multi writer with mount\n"+
+"access type' (the driver's technical name for ReadWriteMany). This delay is why the PVC can sit\n"+
+"looking merely 'not bound yet' for a while before the real, permanent error ever appears.\n\n"+
+"BONUS FINDING: patching a running Deployment to add a volume creates a NEW ReplicaSet (new pod that\n"+
+"needs the volume) while the OLD ReplicaSet's pod (no volume, already healthy) stays put, since the\n"+
+"rollout can't proceed until the new pod becomes Ready. A storage problem can therefore masquerade as a\n"+
+"'stuck rollout' — 'kubectl get pods' showing two pods, one Running one Pending, is the tell.\n\n"+
+"COMMON INTERVIEW Qs\n"+
+"Q: A PVC is stuck Pending — what's the very first thing you check?\n"+
+"A: 'kubectl describe pvc' and read its Events, not just its Status. The Events say exactly which stage\n"+
+"   it's stuck at — waiting for a consumer, waiting for the provisioner, or an outright rejected request.\n\n"+
+"Q: Why would a PVC sit fine for a while and only fail once a pod is actually scheduled?\n"+
+"A: 'WaitForFirstConsumer' binding mode delays provisioning until a consuming pod is scheduled (so the\n"+
+"   disk gets created in the right zone). Nothing is validated before that point — including whether the\n"+
+"   requested access mode is even possible.\n\n"+
+"Q: Can you ever get ReadWriteMany on GKE?\n"+
+"A: Not with a regular Persistent-Disk-backed StorageClass. You need storage built for concurrent\n"+
+"   multi-node access — e.g. a Filestore-backed StorageClass (NFS) — a different underlying technology,\n"+
+"   not a config tweak on the same disk type.\n\n"+
+"--- paste your own points / questions from other sites below this line ---\n",
+      problems:[{
+        id:"p-pvc-1", title:"PVC and pod both stuck Pending — ReadWriteMany on a disk that can't do it", difficulty:"standard",
+        tags:["pvc","storage","storageclass","access-mode","csi"],
+        symptom:"The 'storage-app' deployment in drill needs a shared data volume — the plan was for multiple replicas to read/write the same disk simultaneously. 'kubectl get pods' shows it stuck Pending. 'kubectl get pvc' shows the claim also stuck Pending. Nothing crashed — nothing ever started. What's actually blocking this, and can it ever resolve on its own?",
+        hint:"Not every kind of storage supports being attached to multiple pods writing at once — the access mode you request has to be something the underlying storage type can physically provide. Check the PVC's own Events, not just its Status.",
+        diagnosis:"describe pvc shared-data -> Events show a sequence: 'WaitForFirstConsumer' (normal, just waiting for a pod) -> 'WaitForPodScheduled' -> 'Provisioning' -> then 'ProvisioningFailed: Volume provisioning failed with infeasible error ... rpc error: code = InvalidArgument desc = VolumeCapabilities is invalid: specified multi writer with mount access type'. get pods shows TWO pods: the original one (Running, from before the volume was added) and a new one (Pending, from after) — the rollout is stuck because the new pod can never satisfy its volume dependency.",
+        rootCause:"The PVC requested accessModes: [\"ReadWriteMany\"] against storageClassName: standard-rwo, which is backed by the pd.csi.storage.gke.io provisioner — a regular GCE Persistent Disk. A Persistent Disk is a block device that can only be attached for read/write to ONE node at a time; ReadWriteMany explicitly asks for many nodes to mount and write simultaneously, which this storage type is physically incapable of providing, not just unconfigured for. Because binding mode is WaitForFirstConsumer, this impossibility isn't caught until a pod actually gets scheduled and the CSI driver's CreateVolume call runs — before that point, the PVC just looks like it's 'waiting,' not broken.",
+        fix:"Change the access mode to ReadWriteOnce, matching what Persistent Disk actually supports. If genuine multi-pod concurrent read/write access is a real requirement, the fix isn't a different accessMode value on the same StorageClass — it requires a StorageClass backed by a filesystem built for that (e.g. Filestore/NFS-backed), a different storage technology entirely.",
+        mental:"A PVC stuck Pending has (at least) two distinct root causes that look identical at first: a StorageClass that doesn't exist (nothing can ever provision — permanently stuck immediately) versus a real StorageClass asked for something it can't do (provisioning is attempted and explicitly rejected, but only once a pod triggers it, thanks to WaitForFirstConsumer). Always read the PVC's Events in full, in order — the sequence itself tells you which stage you're stuck at. And remember: a volume problem can disguise itself as a stuck rollout — two pods, one healthy and old, one Pending and new, is the giveaway.",
+        commands:[
+          {label:"Setup (break it)", code:"kubectl create namespace drill\ncat <<'EOF' | kubectl apply -f -\napiVersion: v1\nkind: PersistentVolumeClaim\nmetadata:\n  name: shared-data\n  namespace: drill\nspec:\n  accessModes: [\"ReadWriteMany\"]\n  storageClassName: standard-rwo\n  resources:\n    requests:\n      storage: 1Gi\nEOF\nkubectl -n drill create deployment storage-app --image=nginx:alpine --replicas=1\nkubectl -n drill patch deployment storage-app --type=json -p='[\n  {\"op\":\"add\",\"path\":\"/spec/template/spec/volumes\",\"value\":[{\"name\":\"data\",\"persistentVolumeClaim\":{\"claimName\":\"shared-data\"}}]},\n  {\"op\":\"add\",\"path\":\"/spec/template/spec/containers/0/volumeMounts\",\"value\":[{\"name\":\"data\",\"mountPath\":\"/data\"}]}\n]'"},
+          {label:"Diagnose", code:"kubectl get pvc -n drill                              # STATUS Pending\nkubectl describe pvc shared-data -n drill             # Events: WaitForFirstConsumer -> ProvisioningFailed (multi writer not supported)\nkubectl get pods -n drill                             # two pods: one Running (old, no volume), one Pending (new, needs volume)"},
+          {label:"Fix", code:"# accessModes is immutable on an existing PVC — it can't be patched in place, must be recreated:\nkubectl -n drill delete deployment storage-app\nkubectl -n drill delete pvc shared-data\ncat <<'EOF' | kubectl apply -f -\napiVersion: v1\nkind: PersistentVolumeClaim\nmetadata:\n  name: shared-data\n  namespace: drill\nspec:\n  accessModes: [\"ReadWriteOnce\"]\n  storageClassName: standard-rwo\n  resources:\n    requests:\n      storage: 1Gi\nEOF\nkubectl -n drill create deployment storage-app --image=nginx:alpine --replicas=1\nkubectl -n drill patch deployment storage-app --type=json -p='[\n  {\"op\":\"add\",\"path\":\"/spec/template/spec/volumes\",\"value\":[{\"name\":\"data\",\"persistentVolumeClaim\":{\"claimName\":\"shared-data\"}}]},\n  {\"op\":\"add\",\"path\":\"/spec/template/spec/containers/0/volumeMounts\",\"value\":[{\"name\":\"data\",\"mountPath\":\"/data\"}]}\n]'\nkubectl rollout status deployment/storage-app -n drill\nkubectl get pvc -n drill                              # now Bound\nkubectl get pods -n drill                             # 1/1 Running"},
+          {label:"Cleanup", code:"kubectl delete namespace drill"}
+        ]
+      }]
     }
   ];
 
