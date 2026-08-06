@@ -278,6 +278,7 @@
         <h1>GKE Troubleshooting Vault</h1>
         <div class="sub">topic-wise drills · notes · interview prep · runs offline</div>
         <div class="sub sync-off" id="syncStatus">○ connecting to sync…</div>
+        <div style="margin-top:6px"><button class="btn sm" id="ownerAuthBtn">Sign in with Google</button></div>
       </div>
     </div>
     <div class="stats">
@@ -400,16 +401,34 @@
     messagingSenderId:"697905768456",
     appId:"1:697905768456:web:9fd4b1a7861bad585d09bd"
   };
-  let db=null, cloudReady=false;
+  // Owner vs visitor: ONLY this account's writes ever reach the shared/synced copy (also
+  // enforced server-side by the database rules, not just here). Anyone else who opens the
+  // link can still see everything, but anything THEY save stays local to their own browser —
+  // never pushed to Firebase, never visible to the owner or to other visitors.
+  const OWNER_EMAIL="abhidwivedi9@gmail.com";
+  let db=null, cloudReady=false, isOwner=false;
   function syncPush(path,val){
-    if(!db||!cloudReady)return;
+    if(!db||!cloudReady||!isOwner)return;
     try{db.ref(path).set(JSON.stringify(val));}catch(e){}
+  }
+  function updateAuthButton(){
+    const btn=document.getElementById("ownerAuthBtn");
+    if(!btn)return;
+    if(isOwner){
+      btn.textContent="Signed in as you · Sign out";
+      btn.onclick=()=>{firebase.auth().signOut().then(()=>firebase.auth().signInAnonymously().catch(()=>{}));};
+    }else{
+      btn.textContent="Sign in with Google";
+      btn.onclick=()=>{firebase.auth().signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch(err=>{toast("Sign-in failed: "+err.message);});};
+    }
   }
   try{
     firebase.initializeApp(firebaseConfig);
     db=firebase.database();
     firebase.auth().onAuthStateChanged(user=>{
       cloudReady=!!user;
+      isOwner=!!(user && user.email===OWNER_EMAIL);
+      updateAuthButton();
       if(user) startCloudSync();
     });
     firebase.auth().signInAnonymously().catch(()=>{});
@@ -1733,8 +1752,11 @@
     db.ref(".info/connected").on("value",snap=>{
       const s=$("#syncStatus");
       if(!s)return;
-      if(snap.val()===true){s.textContent="● synced live — updates here reach every device";s.className="sub sync-on";}
-      else{s.textContent="○ reconnecting… (working from local copy)";s.className="sub sync-off";}
+      if(snap.val()===true){
+        if(isOwner){s.textContent="● synced live — updates here reach every device";}
+        else{s.textContent="● viewing live — anything you save stays on this device only";}
+        s.className="sub sync-on";
+      }else{s.textContent="○ reconnecting… (working from local copy)";s.className="sub sync-off";}
     });
     // Deliberately does NOT auto-push local data when the cloud path is empty — a device
     // with nothing local yet (or a fresh/sandboxed session) must never be able to overwrite
