@@ -956,7 +956,9 @@
       {desc:"List every cluster context kubectl knows about", cmd:"kubectl config get-contexts"},
       {desc:"See which context (cluster) you're currently talking to", cmd:"kubectl config current-context"},
       {desc:"Switch to a different cluster/context", cmd:"kubectl config use-context gke_terraform-gke-learning_asia-south1_terraform-gke-cluster"},
-      {desc:"Make a namespace your default so you stop typing -n every time", cmd:"kubectl config set-context --current --namespace=drill", parts:"<b>drill</b> = namespace you want as default for the current context"}
+      {desc:"Make a namespace your default so you stop typing -n every time", cmd:"kubectl config set-context --current --namespace=drill", parts:"<b>drill</b> = namespace you want as default for the current context"},
+      {desc:"View your full kubeconfig — every cluster, context, and user in one place", cmd:"kubectl config view", parts:"add <b>--minify</b> to show only the current context's entries"},
+      {desc:"Remove an old/stale context you no longer need", cmd:"kubectl config delete-context gke_old-project_asia-south1_old-cluster"}
     ]},
     {cat:"2. Nodes", commands:[
       {desc:"List every node kubectl can see, with IPs and versions", cmd:"kubectl get nodes -o wide"},
@@ -966,13 +968,15 @@
       {desc:"Make a cordoned node schedulable again", cmd:"kubectl uncordon gk3-terraform-gke-cluster-pool-1-hxq2"},
       {desc:"Live CPU/memory usage per node (needs metrics-server)", cmd:"kubectl top nodes"},
       {desc:"Add a taint so only pods that tolerate it can schedule here", cmd:"kubectl taint nodes gk3-terraform-gke-cluster-pool-1-hxq2 dedicated=gpu:NoSchedule", parts:"<b>dedicated=gpu</b> = taint key=value · <b>NoSchedule</b> = effect. Pods need a matching toleration to land here."},
-      {desc:"Remove a taint from a node", cmd:"kubectl taint nodes gk3-terraform-gke-cluster-pool-1-hxq2 dedicated=gpu:NoSchedule-", parts:"trailing <b>-</b> removes the matching taint"}
+      {desc:"Remove a taint from a node", cmd:"kubectl taint nodes gk3-terraform-gke-cluster-pool-1-hxq2 dedicated=gpu:NoSchedule-", parts:"trailing <b>-</b> removes the matching taint"},
+      {desc:"See every label on every node — the exact values a nodeSelector/affinity has to match", cmd:"kubectl get nodes --show-labels", parts:"the fastest way to confirm whether a value like topology.kubernetes.io/zone actually exists on any real node"}
     ]},
     {cat:"3. Namespaces", commands:[
       {desc:"List every namespace on the cluster", cmd:"kubectl get ns"},
       {desc:"Create a new namespace (isolated workspace for practice/prod separation)", cmd:"kubectl create namespace drill", parts:"<b>drill</b> = the namespace name — this is a logical tag, not a physical boundary; pods in it can live on any node"},
       {desc:"See a namespace's labels/annotations/status", cmd:"kubectl describe namespace drill"},
-      {desc:"Delete a namespace AND everything inside it (irreversible)", cmd:"kubectl delete namespace drill"}
+      {desc:"Delete a namespace AND everything inside it (irreversible)", cmd:"kubectl delete namespace drill"},
+      {desc:"Turn on Pod Security Admission enforcement for a namespace", cmd:"kubectl label namespace drill pod-security.kubernetes.io/enforce=restricted", parts:"PSA levels (privileged/baseline/restricted) are set via namespace LABELS, not a separate resource — a pod violating the level gets rejected at admission"}
     ]},
     {cat:"4. Pods — get, inspect, logs, exec", commands:[
       {desc:"List pods in the current namespace", cmd:"kubectl get pods"},
@@ -983,20 +987,25 @@
       {desc:"List only pods matching a label (e.g. all pods of one app)", cmd:"kubectl get pods -n drill -l app=web", parts:"<b>app=web</b> = label key=value — 'web' is the app's label name, not a count"},
       {desc:"Full detail on one pod — status, events, resource limits, mounts", cmd:"kubectl describe pod web-595587cc7f-8ln77 -n drill", parts:"<b>web-595587cc7f-8ln77</b> = exact pod name from 'get pods'"},
       {desc:"Describe every pod matching a label instead of typing the exact name", cmd:"kubectl describe pod -n drill -l app=web"},
+      {desc:"Create a single Pod directly from an image — no Deployment, no ReplicaSet", cmd:"kubectl run mypod --image=nginx:alpine -n drill --restart=Never", parts:"<b>--restart=Never</b> makes the intent explicit — modern kubectl 'run' always creates a bare Pod either way (never a Deployment), unlike 'kubectl create deployment' in the next section"},
       {desc:"Print a pod's current logs", cmd:"kubectl logs web-595587cc7f-8ln77 -n drill"},
       {desc:"Print logs from one container in a multi-container pod", cmd:"kubectl logs web-595587cc7f-8ln77 -c sidecar -n drill", parts:"<b>-c sidecar</b> = required when the pod has more than one container"},
       {desc:"Stream logs live as they're written", cmd:"kubectl logs web-595587cc7f-8ln77 -n drill -f", parts:"<b>-f</b> = follow, like tail -f"},
       {desc:"Read logs from the crashed/previous instance of a restarting pod", cmd:"kubectl logs web-595587cc7f-8ln77 -n drill --previous", parts:"may fail with 'unable to retrieve' if it was already garbage-collected on a fast crashloop"},
+      {desc:"Only show logs from the last hour, not the whole history", cmd:"kubectl logs web-595587cc7f-8ln77 -n drill --since=1h"},
+      {desc:"Only show the last N lines of logs", cmd:"kubectl logs web-595587cc7f-8ln77 -n drill --tail=50", parts:"combine with -f for 'tail -f -n 50' behavior"},
       {desc:"Open an interactive shell inside a running container", cmd:"kubectl exec -it web-595587cc7f-8ln77 -n drill -- /bin/sh", parts:"<b>-it</b> = interactive+tty · <b>/bin/sh</b> = shell to run (use /bin/bash if the image has it)"},
       {desc:"Run a single one-off command inside a pod without a shell", cmd:"kubectl exec web-595587cc7f-8ln77 -n drill -- env"},
       {desc:"Attach a debug container to a running pod without restarting it", cmd:"kubectl debug web-595587cc7f-8ln77 -n drill -it --image=busybox", parts:"useful when the pod's own image has no shell/tools to poke around with"},
       {desc:"Delete a single pod (its Deployment/controller will usually recreate it)", cmd:"kubectl delete pod web-595587cc7f-8ln77 -n drill"},
       {desc:"Quickly spin up a throwaway test pod from an image", cmd:"kubectl run test-box --image=nginx:alpine -n drill", parts:"<b>test-box</b> = pod name you're choosing · <b>nginx:alpine</b> = image name:tag"},
       {desc:"Copy a file out of (or into) a running pod", cmd:"kubectl cp drill/web-595587cc7f-8ln77:/etc/nginx/nginx.conf ./nginx.conf", parts:"format: <b>namespace/pod:/path/in/container</b> then local destination path"},
-      {desc:"Forward a local port straight to a pod (bypassing any Service)", cmd:"kubectl port-forward pod/web-595587cc7f-8ln77 8080:80 -n drill", parts:"localhost:8080 -> pod's port 80, for direct local testing"}
+      {desc:"Forward a local port straight to a pod (bypassing any Service)", cmd:"kubectl port-forward pod/web-595587cc7f-8ln77 8080:80 -n drill", parts:"localhost:8080 -> pod's port 80, for direct local testing"},
+      {desc:"Bulk-delete every pod stuck in a Failed phase, cluster cleanup after a bad batch", cmd:"kubectl delete pods -n drill --field-selector=status.phase=Failed", parts:"much faster than deleting failed pods one at a time by name"}
     ]},
     {cat:"5. Deployments — create, scale, roll out, roll back", commands:[
       {desc:"Create a Deployment straight from an image (quick, no YAML)", cmd:"kubectl create deployment web --image=nginx:alpine -n drill", parts:"<b>web</b> = deployment name · <b>nginx:alpine</b> = image name:tag — alpine is just the tag, meaning the lightweight nginx build"},
+      {desc:"Generate a Deployment's YAML without actually creating it — fast scaffolding", cmd:"kubectl create deployment web --image=nginx:alpine --replicas=3 -n drill --dry-run=client -o yaml", parts:"prints the YAML to stdout instead of applying it — pipe to a file, edit, then 'kubectl apply -f' it for real"},
       {desc:"Apply a full Deployment (or any resource) from a YAML file", cmd:"kubectl apply -f deployment.yaml"},
       {desc:"List all Deployments in a namespace", cmd:"kubectl get deployments -n drill"},
       {desc:"Full detail on a Deployment — replicas, strategy, conditions, events", cmd:"kubectl describe deployment web -n drill"},
@@ -1025,6 +1034,7 @@
     ]},
     {cat:"7. Services & Networking", commands:[
       {desc:"Expose a Deployment as a stable network endpoint (Service)", cmd:"kubectl expose deployment web --port=80 --target-port=8080 -n drill", parts:"<b>--port 80</b> = Service's port · <b>--target-port 8080</b> = container's actual listening port"},
+      {desc:"Create a ClusterIP Service directly, without an existing Deployment to expose", cmd:"kubectl create service clusterip web --tcp=80:8080 -n drill", parts:"distinct from 'expose' — this builds a Service from scratch rather than deriving one from a running workload's labels"},
       {desc:"List Services in a namespace", cmd:"kubectl get svc -n drill"},
       {desc:"Full detail on a Service — type, cluster IP, selector, ports", cmd:"kubectl describe svc web -n drill"},
       {desc:"See which pod IPs a Service is actually routing traffic to", cmd:"kubectl get endpoints web -n drill", parts:"empty endpoints = Service has no matching READY pods, even if pods exist and are Running"},
@@ -1034,6 +1044,8 @@
     ]},
     {cat:"8. Ingress", commands:[
       {desc:"List Ingress resources (external HTTP/S entry points)", cmd:"kubectl get ingress -n drill"},
+      {desc:"Create an Ingress imperatively, without writing YAML", cmd:"kubectl create ingress web --rule=\"drill.example.com/*=web:80\" -n drill", parts:"quick for a single simple rule — anything with multiple paths/hosts or TLS is clearer as YAML"},
+      {desc:"List the IngressClasses available on this cluster", cmd:"kubectl get ingressclass", parts:"GKE ships its own default class — confirms which controller will actually pick up a given Ingress"},
       {desc:"Full detail on an Ingress — rules, backend, TLS, address", cmd:"kubectl describe ingress web -n drill"},
       {desc:"Apply an Ingress definition from YAML", cmd:"kubectl apply -f ingress.yaml"},
       {desc:"Delete an Ingress", cmd:"kubectl delete ingress web -n drill"}
@@ -1044,39 +1056,55 @@
       {desc:"List ConfigMaps", cmd:"kubectl get configmap -n drill"},
       {desc:"View a ConfigMap's actual key/value data", cmd:"kubectl get configmap app-config -n drill -o yaml"},
       {desc:"Create a Secret from literal values (base64-encoded automatically)", cmd:"kubectl create secret generic api-cfg --from-literal=DATABASE_URL='postgres://demo' -n drill", parts:"<b>generic</b> = Secret type · <b>api-cfg</b> = Secret name"},
+      {desc:"Create an imagePullSecret for pulling private images", cmd:"kubectl create secret docker-registry regcred --docker-server=asia-south1-docker.pkg.dev --docker-username=_json_key --docker-password=\"$(cat key.json)\" -n drill", parts:"this is the actual fix referenced by the Image Pull Failures topic's 'unauthorized/denied' case — reference it in a pod via imagePullSecrets"},
+      {desc:"Create a TLS Secret from an existing cert/key pair", cmd:"kubectl create secret tls web-tls --cert=tls.crt --key=tls.key -n drill", parts:"what an Ingress's TLS block actually references — cert-manager normally creates these for you, but this is the manual equivalent"},
       {desc:"List Secrets (values hidden by default)", cmd:"kubectl get secrets -n drill"},
       {desc:"Decode a Secret's actual value (base64 decode)", cmd:"kubectl get secret api-cfg -n drill -o jsonpath='{.data.DATABASE_URL}' | base64 -d", parts:"Secrets are base64-ENCODED by default, not encrypted at rest unless you've enabled that separately"},
       {desc:"Inject a single env var into a running Deployment", cmd:"kubectl set env deployment/api DATABASE_URL='postgres://demo' -n drill"},
-      {desc:"Inject every key from a ConfigMap as env vars", cmd:"kubectl set env deployment/api --from=configmap/app-config -n drill"}
+      {desc:"Inject every key from a ConfigMap as env vars", cmd:"kubectl set env deployment/api --from=configmap/app-config -n drill"},
+      {desc:"Delete a ConfigMap", cmd:"kubectl delete configmap app-config -n drill"},
+      {desc:"Delete a Secret", cmd:"kubectl delete secret api-cfg -n drill"}
     ]},
     {cat:"10. Storage — PV, PVC, StorageClass", commands:[
       {desc:"List PersistentVolumeClaims (a pod's request for storage)", cmd:"kubectl get pvc -n drill"},
       {desc:"List PersistentVolumes (the actual storage, cluster-wide)", cmd:"kubectl get pv"},
       {desc:"List available StorageClasses (the 'kind' of disk on offer)", cmd:"kubectl get storageclass"},
+      {desc:"Inspect a StorageClass's actual provisioner and supported parameters", cmd:"kubectl describe storageclass standard-rwo", parts:"this is where an access-mode mismatch (ReadWriteMany on a Persistent-Disk-backed class) actually gets decided — check the provisioner field"},
       {desc:"Full detail on a PVC — bound status, capacity, access mode", cmd:"kubectl describe pvc data-pvc -n drill", parts:"<b>data-pvc</b> = PVC name"},
       {desc:"Apply a PVC definition from YAML", cmd:"kubectl apply -f pvc.yaml"},
-      {desc:"Delete a PVC (only safe once nothing is using it)", cmd:"kubectl delete pvc data-pvc -n drill"}
+      {desc:"Delete a PVC (only safe once nothing is using it)", cmd:"kubectl delete pvc data-pvc -n drill"},
+      {desc:"Delete a PersistentVolume directly (rare — usually deleting the PVC is enough)", cmd:"kubectl delete pv pvc-3f8a9c21-b5d4-4e7a-9c1a-2f6e8d4b1a90", parts:"only needed for a PV stuck Released with no claim, or one provisioned outside a PVC entirely"}
     ]},
     {cat:"11. Jobs & CronJobs", commands:[
       {desc:"Run a one-off task to completion (not a long-running service)", cmd:"kubectl create job hello-job --image=busybox -n drill -- echo hello", parts:"<b>hello-job</b> = Job name · everything after -- is the container's command"},
       {desc:"List Jobs and whether they completed", cmd:"kubectl get jobs -n drill"},
+      {desc:"Full detail on a Job — completions, failures, backoffLimit status", cmd:"kubectl describe job hello-job -n drill", parts:"shows exactly how many attempts failed and why — the first place to look when a Job silently never completes"},
       {desc:"Schedule a Job to run on a recurring schedule", cmd:"kubectl create cronjob hello-cron --schedule='*/5 * * * *' --image=busybox -n drill -- echo hi", parts:"<b>*/5 * * * *</b> = every 5 minutes, standard cron syntax"},
       {desc:"List CronJobs and their next scheduled run", cmd:"kubectl get cronjobs -n drill"},
+      {desc:"Full detail on a CronJob — schedule, concurrencyPolicy, active/last runs", cmd:"kubectl describe cronjob hello-cron -n drill", parts:"check concurrencyPolicy here if runs seem to be skipping or overlapping unexpectedly"},
       {desc:"Manually trigger one run of a CronJob right now", cmd:"kubectl create job hello-manual --from=cronjob/hello-cron -n drill", parts:"useful for testing a CronJob without waiting for its schedule"},
-      {desc:"Delete a Job (also cleans up its finished pods)", cmd:"kubectl delete job hello-job -n drill"}
+      {desc:"Pause a CronJob without deleting it", cmd:"kubectl patch cronjob hello-cron -n drill -p '{\"spec\":{\"suspend\":true}}'", parts:"set back to <b>false</b> to resume — the schedule definition is preserved either way"},
+      {desc:"Delete a Job (also cleans up its finished pods)", cmd:"kubectl delete job hello-job -n drill"},
+      {desc:"Delete a CronJob", cmd:"kubectl delete cronjob hello-cron -n drill"}
     ]},
     {cat:"12. RBAC & Service Accounts", commands:[
       {desc:"List ServiceAccounts (a pod's identity for talking to the API)", cmd:"kubectl get serviceaccounts -n drill"},
       {desc:"Create a new ServiceAccount", cmd:"kubectl create serviceaccount web-sa -n drill", parts:"<b>web-sa</b> = ServiceAccount name"},
       {desc:"List Roles (namespace-scoped permission sets)", cmd:"kubectl get roles -n drill"},
+      {desc:"Create a Role granting specific verbs on a resource type", cmd:"kubectl create role pod-reader --verb=get,list,watch --resource=pods -n drill", parts:"a Role alone grants nothing until it's attached to an identity via a RoleBinding — the next command"},
+      {desc:"Bind a Role to a ServiceAccount, actually granting the permission", cmd:"kubectl create rolebinding web-pod-reader --role=pod-reader --serviceaccount=drill:web-sa -n drill", parts:"<b>drill:web-sa</b> = namespace:ServiceAccount being granted the Role"},
+      {desc:"Full detail on a Role — the exact verbs/resources it grants", cmd:"kubectl describe role pod-reader -n drill"},
       {desc:"List RoleBindings (who's granted which Role)", cmd:"kubectl get rolebindings -n drill"},
       {desc:"List ClusterRoles (cluster-wide permission sets)", cmd:"kubectl get clusterroles"},
+      {desc:"List ClusterRoleBindings (cluster-wide grants — powerful, worth auditing)", cmd:"kubectl get clusterrolebindings"},
       {desc:"Check whether you (or another identity) can perform an action", cmd:"kubectl auth can-i delete pods -n drill", parts:"answers yes/no — add '--as=system:serviceaccount:drill:web-sa' to check for a specific SA"}
     ]},
     {cat:"13. Labels, Selectors, Annotations & Taints", commands:[
       {desc:"Add/update a label on an existing pod", cmd:"kubectl label pod web-595587cc7f-8ln77 env=prod -n drill", parts:"<b>env=prod</b> = new label key=value"},
       {desc:"Filter resources by one or more labels", cmd:"kubectl get pods -n drill -l app=web,env=prod", parts:"comma = AND — matches pods with BOTH labels"},
+      {desc:"Filter using a set-based selector (OR logic across values)", cmd:"kubectl get pods -n drill -l 'app in (web,api)'", parts:"matches pods labeled app=web OR app=api — plain '-l app=web,env=prod' can only do AND, never OR"},
       {desc:"Add/update an annotation (free-text metadata, not for selecting)", cmd:"kubectl annotate pod web-595587cc7f-8ln77 note='checked-by-abhi' -n drill"},
+      {desc:"Remove an annotation from a resource", cmd:"kubectl annotate pod web-595587cc7f-8ln77 note- -n drill", parts:"same trailing <b>-</b> convention as removing a label"},
       {desc:"Remove a label from a resource", cmd:"kubectl label pod web-595587cc7f-8ln77 env-", parts:"trailing <b>-</b> after the key removes it"}
     ]},
     {cat:"14. Declarative Management — apply, diff, patch, kustomize", commands:[
@@ -1084,10 +1112,14 @@
       {desc:"Apply every YAML file in a folder at once", cmd:"kubectl apply -f ./k8s/", parts:"applies all manifests in the ./k8s directory together"},
       {desc:"Preview changes before applying them", cmd:"kubectl diff -f deployment.yaml"},
       {desc:"Build and apply a Kustomize overlay", cmd:"kubectl apply -k ./overlays/prod", parts:"-k points at a directory containing a kustomization.yaml, for environment-specific overlays"},
+      {desc:"Preview a Kustomize overlay's rendered YAML without applying it", cmd:"kubectl kustomize ./overlays/prod", parts:"prints the final merged manifest to stdout — the 'diff' equivalent for kustomize overlays"},
       {desc:"Remove resources defined in a file (matching apply, in reverse)", cmd:"kubectl delete -f deployment.yaml"}
     ]},
     {cat:"15. Events, Debugging & Resource Usage", commands:[
       {desc:"See every event in a namespace, most recent last", cmd:"kubectl get events -n drill --sort-by=.lastTimestamp"},
+      {desc:"See only Warning events — skip the routine Normal noise", cmd:"kubectl get events -n drill --field-selector type=Warning --sort-by=.lastTimestamp", parts:"fastest way to triage a namespace you don't know yet — Normal events (Scheduled, Pulled, Created) drown out the ones that actually matter"},
+      {desc:"List ResourceQuotas and how much of each is currently used", cmd:"kubectl get resourcequota -n drill"},
+      {desc:"List LimitRanges — default/min/max resource values applied to new pods", cmd:"kubectl get limitrange -n drill", parts:"explains a pod's resources when nothing in its own spec set them explicitly"},
       {desc:"Live CPU/memory usage per pod (needs metrics-server)", cmd:"kubectl top pod -n drill"},
       {desc:"List every resource of every kind in one namespace at a glance", cmd:"kubectl get all -n drill"},
       {desc:"Look up any resource field's meaning straight from the API docs", cmd:"kubectl explain pod.spec.containers", parts:"works for any nested field, e.g. 'kubectl explain deployment.spec.strategy'"},
@@ -1095,7 +1127,34 @@
       {desc:"Dump a resource's full live YAML (useful for copy/reuse or diffing)", cmd:"kubectl get deployment web -n drill -o yaml"},
       {desc:"Wait for a condition before moving on (e.g. in a script)", cmd:"kubectl wait --for=condition=available deployment/web -n drill --timeout=90s"}
     ]},
-    {cat:"16. Cleanup", commands:[
+    {cat:"16. StatefulSets", commands:[
+      {desc:"List StatefulSets — for workloads needing stable identity/storage per replica", cmd:"kubectl get statefulset -n drill"},
+      {desc:"Full detail on a StatefulSet — replicas, update strategy, volume claim templates", cmd:"kubectl describe statefulset web-db -n drill"},
+      {desc:"Scale a StatefulSet — pods are added/removed one at a time, in order", cmd:"kubectl scale statefulset web-db --replicas=3 -n drill", parts:"unlike a Deployment, ordinals matter — web-db-0 always comes up before web-db-1"},
+      {desc:"Watch a StatefulSet's rolling update (always ordered, highest ordinal first)", cmd:"kubectl rollout status statefulset/web-db -n drill"},
+      {desc:"See the PVCs a StatefulSet created for each replica", cmd:"kubectl get pvc -n drill -l app=web-db", parts:"each pod gets its OWN PVC from the volumeClaimTemplate — they are not shared, and are not deleted automatically when the StatefulSet is"},
+      {desc:"Delete a StatefulSet (its per-replica PVCs survive by default)", cmd:"kubectl delete statefulset web-db -n drill"}
+    ]},
+    {cat:"17. DaemonSets", commands:[
+      {desc:"List DaemonSets — one pod per (matching) node, automatically", cmd:"kubectl get daemonset -n drill", parts:"the usual real-world examples: logging agents, monitoring agents, CNI/networking pods"},
+      {desc:"Full detail on a DaemonSet — node selector, update strategy, scheduled vs desired", cmd:"kubectl describe daemonset log-agent -n drill"},
+      {desc:"See exactly which nodes a DaemonSet's pods landed on", cmd:"kubectl get pods -n drill -l app=log-agent -o wide"},
+      {desc:"Watch a DaemonSet's rolling update across nodes", cmd:"kubectl rollout status daemonset/log-agent -n drill"},
+      {desc:"Delete a DaemonSet (removes its pod from every node)", cmd:"kubectl delete daemonset log-agent -n drill"}
+    ]},
+    {cat:"18. NetworkPolicy", commands:[
+      {desc:"List NetworkPolicies in a namespace", cmd:"kubectl get networkpolicy -n drill"},
+      {desc:"Full detail on a NetworkPolicy — pod selector, allowed ingress/egress rules", cmd:"kubectl describe networkpolicy deny-all -n drill", parts:"an empty podSelector with no rules is the classic 'deny everything in this namespace' baseline policy"},
+      {desc:"Apply a NetworkPolicy definition from YAML", cmd:"kubectl apply -f netpol.yaml", parts:"NetworkPolicies are additive — with none defined, all traffic is allowed; the moment ONE exists selecting a pod, everything not explicitly allowed for that pod is denied"},
+      {desc:"Delete a NetworkPolicy (reopens whatever traffic it was blocking)", cmd:"kubectl delete networkpolicy deny-all -n drill"}
+    ]},
+    {cat:"19. PodDisruptionBudget", commands:[
+      {desc:"Create a PDB — a floor on how many pods can be voluntarily disrupted at once", cmd:"kubectl create pdb web-pdb --selector=app=web --min-available=2 -n drill", parts:"applies to VOLUNTARY disruptions only — node drains, cluster upgrades — never to a crash or an involuntary node failure"},
+      {desc:"List PodDisruptionBudgets and their current allowed-disruptions count", cmd:"kubectl get pdb -n drill"},
+      {desc:"Full detail on a PDB — current healthy count vs the minimum required", cmd:"kubectl describe pdb web-pdb -n drill", parts:"a drain/rollout that would breach this gets blocked and waits — this is the mechanism, not just a suggestion"},
+      {desc:"Delete a PodDisruptionBudget", cmd:"kubectl delete pdb web-pdb -n drill"}
+    ]},
+    {cat:"20. Cleanup", commands:[
       {desc:"Delete every resource of every kind in one namespace, keep the namespace itself", cmd:"kubectl delete all --all -n drill"},
       {desc:"Delete a namespace and everything inside it in one shot", cmd:"kubectl delete namespace drill"}
     ]}
