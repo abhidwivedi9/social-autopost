@@ -406,7 +406,7 @@
   // link can still see everything, but anything THEY save stays local to their own browser —
   // never pushed to Firebase, never visible to the owner or to other visitors.
   const OWNER_EMAIL="abhidwivedi9@gmail.com";
-  let db=null, cloudReady=false, isOwner=false;
+  let db=null, cloudReady=false, isOwner=false, cloudSyncStarted=false;
   function syncPush(path,val){
     if(!db||!cloudReady||!isOwner)return;
     try{db.ref(path).set(JSON.stringify(val));}catch(e){}
@@ -1808,6 +1808,8 @@
   // Each store round-trips as a JSON string (not a native nested object) so command text
   // containing "/" or "." — invalid in Realtime Database keys — never becomes a path segment.
   function startCloudSync(){
+    if(cloudSyncStarted)return;
+    cloudSyncStarted=true;
     db.ref(".info/connected").on("value",snap=>{
       const s=$("#syncStatus");
       if(!s)return;
