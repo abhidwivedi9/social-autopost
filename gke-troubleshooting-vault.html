@@ -927,7 +927,8 @@
       {desc:"Set your active GCP project", cmd:"gcloud config set project terraform-gke-learning", parts:"<b>terraform-gke-learning</b> = your GCP project ID"},
       {desc:"Check which project you're currently pointed at", cmd:"gcloud config get-value project"},
       {desc:"Set a default region/zone (saves retyping it every time)", cmd:"gcloud config set compute/region asia-south1"},
-      {desc:"Pull cluster credentials into kubectl (do this after creating/switching clusters)", cmd:"gcloud container clusters get-credentials terraform-gke-cluster --region asia-south1", parts:"<b>terraform-gke-cluster</b> = cluster name · <b>asia-south1</b> = region. This writes into ~/.kube/config so kubectl knows where to connect — kubectl itself has no gcloud awareness."}
+      {desc:"Pull cluster credentials into kubectl (do this after creating/switching clusters)", cmd:"gcloud container clusters get-credentials terraform-gke-cluster --region asia-south1", parts:"<b>terraform-gke-cluster</b> = cluster name · <b>asia-south1</b> = region. This writes into ~/.kube/config so kubectl knows where to connect — kubectl itself has no gcloud awareness."},
+      {desc:"Set up Application Default Credentials for local tools/SDKs (Terraform, client libraries)", cmd:"gcloud auth application-default login", parts:"separate from 'gcloud auth login' — ADC is what Terraform's google provider and most client SDKs read by default, not your gcloud CLI session. A stale/missing ADC token is a common cause of Terraform auth errors even when gcloud itself works fine."}
     ]},
     {cat:"2. Cluster Lifecycle", commands:[
       {desc:"Create a standard GKE cluster with 3 nodes", cmd:"gcloud container clusters create terraform-gke-cluster --region asia-south1 --num-nodes 3", parts:"<b>terraform-gke-cluster</b> = name you're choosing · <b>--num-nodes 3</b> = nodes PER ZONE, not total (a 3-zone region = 9 nodes)"},
@@ -937,12 +938,55 @@
       {desc:"Resize a node pool up or down (Standard clusters only)", cmd:"gcloud container clusters resize terraform-gke-cluster --node-pool pool-1 --num-nodes 5 --region asia-south1", parts:"<b>pool-1</b> = node pool name · <b>5</b> = new node count PER ZONE. Not used on Autopilot — it manages node count itself."},
       {desc:"Upgrade the cluster's control plane to a newer Kubernetes version", cmd:"gcloud container clusters upgrade terraform-gke-cluster --region asia-south1 --master --cluster-version 1.35.6-gke.1000", parts:"control plane upgrades first, always — nodes must never run a newer version than the control plane"},
       {desc:"Upgrade one node pool's Kubernetes version (Standard only)", cmd:"gcloud container clusters upgrade terraform-gke-cluster --region asia-south1 --node-pool pool-1", parts:"rolling drain+replace of every node in the pool — protect workloads with a PodDisruptionBudget first"},
-      {desc:"Delete an entire cluster (irreversible — deletes all nodes/workloads)", cmd:"gcloud container clusters delete terraform-gke-cluster --region asia-south1"}
+      {desc:"Delete an entire cluster (irreversible — deletes all nodes/workloads)", cmd:"gcloud container clusters delete terraform-gke-cluster --region asia-south1"},
+      {desc:"List long-running GKE operations (creates, upgrades, resizes) and their status", cmd:"gcloud container operations list --region asia-south1", parts:"every async cluster/node-pool action shows up here while in progress — check this when a command returns immediately but the change is clearly still rolling out"},
+      {desc:"Full detail on one operation — progress, start/end time, target resource", cmd:"gcloud container operations describe operation-1699999999999-abc123ef --region asia-south1", parts:"<b>operation-...</b> = exact operation ID from 'operations list'"},
+      {desc:"Block until a long-running operation finishes", cmd:"gcloud container operations wait operation-1699999999999-abc123ef --region asia-south1", parts:"useful in scripts — blocks instead of polling 'operations list' yourself in a loop"}
     ]},
     {cat:"3. Node Pool Management (Standard clusters)", commands:[
       {desc:"List node pools inside a cluster", cmd:"gcloud container node-pools list --cluster terraform-gke-cluster --region asia-south1", parts:"a cluster can have multiple pools — each pool's nodes are identical (same machine type/size)"},
       {desc:"Add a new node pool to an existing cluster (e.g. for GPU or spot workloads)", cmd:"gcloud container node-pools create pool-2 --cluster terraform-gke-cluster --num-nodes 2 --region asia-south1", parts:"<b>pool-2</b> = new pool's name — give it a different machine-type flag to make it genuinely distinct from pool-1"},
+      {desc:"Full detail on one node pool — machine type, autoscaling, version, status", cmd:"gcloud container node-pools describe pool-1 --cluster terraform-gke-cluster --region asia-south1"},
+      {desc:"Turn on the cluster autoscaler for one node pool", cmd:"gcloud container node-pools update pool-1 --cluster terraform-gke-cluster --region asia-south1 --enable-autoscaling --min-nodes 1 --max-nodes 5", parts:"<b>--min-nodes/--max-nodes</b> = bounds PER ZONE, same rule as --num-nodes at create time"},
+      {desc:"Roll a node pool onto a new node version without recreating the cluster", cmd:"gcloud container node-pools update pool-1 --cluster terraform-gke-cluster --region asia-south1 --node-version=1.35.6-gke.1000", parts:"drains and replaces nodes one at a time — same rolling behavior as 'clusters upgrade --node-pool', just addressed at the pool directly"},
       {desc:"Delete a node pool", cmd:"gcloud container node-pools delete pool-2 --cluster terraform-gke-cluster --region asia-south1"}
+    ]},
+    {cat:"4. IAM & Workload Identity", commands:[
+      {desc:"Create a Google Service Account for a workload to use via Workload Identity", cmd:"gcloud iam service-accounts create web-gsa --display-name=\"web workload identity\" --project=terraform-gke-learning", parts:"<b>web-gsa</b> = GSA name you're choosing — becomes web-gsa@terraform-gke-learning.iam.gserviceaccount.com"},
+      {desc:"List service accounts in the project", cmd:"gcloud iam service-accounts list --project=terraform-gke-learning"},
+      {desc:"Grant a Google Service Account a project-level IAM role", cmd:"gcloud projects add-iam-policy-binding terraform-gke-learning --member=\"serviceAccount:web-gsa@terraform-gke-learning.iam.gserviceaccount.com\" --role=\"roles/artifactregistry.reader\"", parts:"this is what actually gives the workload real permissions — Workload Identity only handles the IDENTITY mapping, not authorization"},
+      {desc:"Allow a Kubernetes ServiceAccount to impersonate this GSA (the Workload Identity binding itself)", cmd:"gcloud iam service-accounts add-iam-policy-binding web-gsa@terraform-gke-learning.iam.gserviceaccount.com --role=\"roles/iam.workloadIdentityUser\" --member=\"serviceAccount:terraform-gke-learning.svc.id.goog[drill/web-sa]\"", parts:"<b>drill/web-sa</b> = namespace/KubernetesServiceAccount — after this, run 'kubectl annotate serviceaccount web-sa iam.gke.io/gcp-service-account=web-gsa@terraform-gke-learning.iam.gserviceaccount.com -n drill' to complete the link"},
+      {desc:"View a GSA's current IAM policy bindings", cmd:"gcloud iam service-accounts get-iam-policy web-gsa@terraform-gke-learning.iam.gserviceaccount.com"},
+      {desc:"List available IAM roles matching a keyword (find the exact role name you need)", cmd:"gcloud iam roles list --filter=\"name:roles/artifactregistry\"", parts:"faster than guessing exact role strings from memory or docs"},
+      {desc:"Delete a Google Service Account", cmd:"gcloud iam service-accounts delete web-gsa@terraform-gke-learning.iam.gserviceaccount.com"}
+    ]},
+    {cat:"5. Artifact Registry", commands:[
+      {desc:"Create a Docker-format Artifact Registry repository", cmd:"gcloud artifacts repositories create web-repo --repository-format=docker --location=asia-south1 --description=\"web app images\"", parts:"<b>web-repo</b> = repo name you're choosing · <b>--location</b> should match where your workloads run, to minimize pull latency"},
+      {desc:"List repositories in the project", cmd:"gcloud artifacts repositories list"},
+      {desc:"Full detail on one repository", cmd:"gcloud artifacts repositories describe web-repo --location=asia-south1"},
+      {desc:"Configure Docker to authenticate against Artifact Registry", cmd:"gcloud auth configure-docker asia-south1-docker.pkg.dev", parts:"needed once per machine before 'docker push' to an Artifact Registry host will work"},
+      {desc:"List images stored in a repository", cmd:"gcloud artifacts docker images list asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo"},
+      {desc:"List tags/digests for one image", cmd:"gcloud artifacts docker tags list asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web"},
+      {desc:"Delete a specific image tag", cmd:"gcloud artifacts docker images delete asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:old-tag"},
+      {desc:"Grant a service account pull access to a repository (the real fix for private-image ImagePullBackOff)", cmd:"gcloud artifacts repositories add-iam-policy-binding web-repo --location=asia-south1 --member=\"serviceAccount:web-gsa@terraform-gke-learning.iam.gserviceaccount.com\" --role=\"roles/artifactregistry.reader\"", parts:"on GKE, prefer granting this to the node's/workload's service account over per-pod imagePullSecrets — see the Image Pull Failures drill topic"},
+      {desc:"Delete a repository (irreversible — deletes every image in it)", cmd:"gcloud artifacts repositories delete web-repo --location=asia-south1"}
+    ]},
+    {cat:"6. VPC & Firewall", commands:[
+      {desc:"List VPC networks in the project", cmd:"gcloud compute networks list"},
+      {desc:"Full detail on one VPC network", cmd:"gcloud compute networks describe default"},
+      {desc:"List subnets (and their IP ranges) in a region", cmd:"gcloud compute networks subnets list --regions=asia-south1"},
+      {desc:"Full detail on one subnet — primary range, secondary ranges", cmd:"gcloud compute networks subnets describe default --region=asia-south1", parts:"secondary ranges here are what a VPC-native GKE cluster actually allocates Pod and Service IPs from — check this when Pod/Service CIDRs look wrong or are exhausted"},
+      {desc:"List firewall rules in the project", cmd:"gcloud compute firewall-rules list"},
+      {desc:"Full detail on one firewall rule — direction, ports, source ranges, target tags", cmd:"gcloud compute firewall-rules describe default-allow-ssh"},
+      {desc:"Create a firewall rule allowing traffic on a specific port", cmd:"gcloud compute firewall-rules create allow-web-8080 --network=default --direction=INGRESS --action=ALLOW --rules=tcp:8080 --source-ranges=10.0.0.0/8", parts:"<b>--source-ranges</b> = who's allowed in — scope this as tight as the real traffic source, never 0.0.0.0/0 unless it's genuinely meant to be public"},
+      {desc:"Delete a firewall rule", cmd:"gcloud compute firewall-rules delete allow-web-8080"}
+    ]},
+    {cat:"7. Project-Level IAM & Quotas", commands:[
+      {desc:"View the project's full IAM policy — every member and role granted", cmd:"gcloud projects get-iam-policy terraform-gke-learning"},
+      {desc:"Grant a user or service account a project-level role", cmd:"gcloud projects add-iam-policy-binding terraform-gke-learning --member=\"user:teammate@example.com\" --role=\"roles/container.viewer\""},
+      {desc:"Revoke a project-level role grant", cmd:"gcloud projects remove-iam-policy-binding terraform-gke-learning --member=\"user:teammate@example.com\" --role=\"roles/container.viewer\""},
+      {desc:"Check current CPU/IP/other quota usage and limits for a region", cmd:"gcloud compute regions describe asia-south1 --format=\"table(quotas.metric,quotas.usage,quotas.limit)\"", parts:"the first place to check when a node pool resize or cluster create fails with a quota error instead of an auth/config one"},
+      {desc:"List all quotas for the project across every service", cmd:"gcloud compute project-info describe --project=terraform-gke-learning --format=\"table(quotas.metric,quotas.usage,quotas.limit)\""}
     ]}
   ];
 
@@ -1168,7 +1212,8 @@
       {desc:"Re-run init after changing your backend config (e.g. switching to remote state)", cmd:"terraform init -reconfigure", parts:"skips trying to migrate existing state — use when you want a clean re-point, not a migration"},
       {desc:"Re-run init and migrate existing state into a newly configured backend", cmd:"terraform init -migrate-state", parts:"use this instead of -reconfigure when you want your CURRENT state carried over to the new backend"},
       {desc:"Check installed Terraform and provider versions", cmd:"terraform version"},
-      {desc:"List the providers this configuration requires", cmd:"terraform providers"}
+      {desc:"List the providers this configuration requires", cmd:"terraform providers"},
+      {desc:"Lock provider versions/checksums for every supported platform, not just your own", cmd:"terraform providers lock -platform=linux_amd64 -platform=darwin_arm64 -platform=windows_amd64", parts:"needed when .terraform.lock.hcl was generated on one OS/arch but CI or a teammate runs on another — without this, 'terraform init' can fail there with a missing-checksum error"}
     ]},
     {cat:"2. Formatting & Validation", commands:[
       {desc:"Auto-format all .tf files to canonical style", cmd:"terraform fmt", parts:"rewrites files in place — run before every commit"},
@@ -1182,14 +1227,16 @@
       {desc:"Override one variable's value just for this plan/apply", cmd:"terraform plan -var=\"cluster_name=terraform-gke-cluster\"", parts:"<b>cluster_name</b> = variable name declared in your .tf files"},
       {desc:"Load variable values from a file instead of typing them", cmd:"terraform plan -var-file=\"prod.tfvars\""},
       {desc:"Preview a plan scoped to just one resource", cmd:"terraform plan -target=google_container_cluster.primary", parts:"<b>google_container_cluster.primary</b> = resource type.name from your .tf file — use sparingly, it can hide side effects on dependent resources"},
-      {desc:"Preview what destroying everything would look like (without doing it)", cmd:"terraform plan -destroy"}
+      {desc:"Preview what destroying everything would look like (without doing it)", cmd:"terraform plan -destroy"},
+      {desc:"Preview only drift — what real infra changed outside Terraform, without planning any config changes", cmd:"terraform plan -refresh-only", parts:"shows what a refresh would update in state, without touching your .tf files' intent — useful to spot manual out-of-band changes before deciding whether to reconcile or overwrite them"}
     ]},
     {cat:"4. Applying Changes", commands:[
       {desc:"Apply changes — prompts for confirmation before making them", cmd:"terraform apply"},
       {desc:"Apply without the interactive yes/no prompt (needed for CI/CD pipelines)", cmd:"terraform apply -auto-approve", parts:"use with real caution outside of pipelines — this is the command that actually changes real infrastructure with zero human check"},
       {desc:"Apply a previously saved plan file exactly as reviewed", cmd:"terraform apply tfplan.out", parts:"the safest apply pattern: plan -out, review it, then apply that exact saved file — guarantees what you approved is what runs"},
       {desc:"Apply changes scoped to just one resource", cmd:"terraform apply -target=google_container_cluster.primary"},
-      {desc:"Apply with variables passed directly", cmd:"terraform apply -var=\"node_count=3\""}
+      {desc:"Apply with variables passed directly", cmd:"terraform apply -var=\"node_count=3\""},
+      {desc:"Apply only the state refresh — sync state with real infra without creating/changing/destroying anything", cmd:"terraform apply -refresh-only", parts:"use after 'plan -refresh-only' to actually accept the drift into state — doesn't touch real infrastructure, only Terraform's record of it"}
     ]},
     {cat:"5. State Management", commands:[
       {desc:"List every resource Terraform is currently tracking", cmd:"terraform state list", parts:"the state file is Terraform's memory of what it created — this shows what's in it"},
@@ -1200,7 +1247,8 @@
       {desc:"Manually mark a resource as needing recreation on next apply", cmd:"terraform apply -replace=google_container_cluster.primary", parts:"modern replacement for the old 'terraform taint' command — forces destroy+recreate of just this one resource"}
     ]},
     {cat:"6. Importing Existing Infrastructure", commands:[
-      {desc:"Bring an already-existing real resource under Terraform's management", cmd:"terraform import google_container_cluster.primary projects/terraform-gke-learning/locations/asia-south1/clusters/terraform-gke-cluster", parts:"format: <b>resource.address</b> then the cloud provider's own resource ID — you still need matching .tf code written by hand first"}
+      {desc:"Bring an already-existing real resource under Terraform's management", cmd:"terraform import google_container_cluster.primary projects/terraform-gke-learning/locations/asia-south1/clusters/terraform-gke-cluster", parts:"format: <b>resource.address</b> then the cloud provider's own resource ID — you still need matching .tf code written by hand first"},
+      {desc:"Generate the matching resource config AND stage the import in one step (modern import, 1.5+)", cmd:"terraform plan -generate-config-out=generated.tf", parts:"requires an <b>import { to = google_container_cluster.primary, id = \"...\" }</b> block in your .tf config first — writes the resource's HCL for you instead of hand-writing it before importing, then review/edit generated.tf and run a normal 'terraform apply' to complete it"}
     ]},
     {cat:"7. Workspaces (managing multiple environments)", commands:[
       {desc:"List all workspaces", cmd:"terraform workspace list", parts:"workspaces let one set of .tf files manage separate states, e.g. dev/staging/prod"},
@@ -1236,6 +1284,11 @@
     {cat:"13. Cleanup", commands:[
       {desc:"Remove the local .terraform directory (downloaded providers/modules cache)", cmd:"rm -rf .terraform", parts:"safe to delete — 'terraform init' rebuilds it. Never delete terraform.tfstate this way — that's your real infrastructure's record."},
       {desc:"Destroy all managed infrastructure, the actual teardown", cmd:"terraform destroy"}
+    ]},
+    {cat:"14. Testing", commands:[
+      {desc:"Run every .tftest.hcl test file in the configuration", cmd:"terraform test", parts:"native Terraform testing (1.6+) — runs plan/apply against test fixtures under a tests/ directory and asserts on the results, no third-party tooling needed"},
+      {desc:"Run a single test file", cmd:"terraform test -filter=tests/cluster_creation.tftest.hcl"},
+      {desc:"Run tests with verbose output — see the full plan/apply output for each run block", cmd:"terraform test -verbose", parts:"useful when an assertion fails and you need to see the actual planned values, not just pass/fail"}
     ]}
   ];
 
@@ -1357,7 +1410,7 @@
 
   const renderRef=makeRefRenderer(
     "#refView", GKE_REF_DATA,
-    "Every <b style=\"color:var(--kube)\">gcloud</b> command for managing GKE as infrastructure — creating, resizing, upgrading, deleting clusters and node pools. Real example values throughout (e.g. <b style=\"color:var(--kube)\">terraform-gke-cluster</b>, <b style=\"color:var(--kube)\">asia-south1</b>) — swap in your own names.",
+    "Every <b style=\"color:var(--kube)\">gcloud</b> command for managing GKE as infrastructure — clusters, node pools, IAM & Workload Identity, Artifact Registry, VPC/firewall, and project-level access. Real example values throughout (e.g. <b style=\"color:var(--kube)\">terraform-gke-cluster</b>, <b style=\"color:var(--kube)\">asia-south1</b>) — swap in your own names.",
     "Search gcloud commands — e.g. resize, upgrade, node pool…",
     "gke"
   );
@@ -1369,7 +1422,7 @@
   );
   const renderTerraformRef=makeRefRenderer(
     "#terraformView", TERRAFORM_REF_DATA,
-    "Every <b style=\"color:var(--kube)\">terraform</b> command, full lifecycle — init through destroy, plus state management, workspaces, and debugging. Real example values throughout (e.g. <b style=\"color:var(--kube)\">terraform-gke-learning</b>, <b style=\"color:var(--kube)\">google_container_cluster.primary</b>) — swap in your own resource names.",
+    "Every <b style=\"color:var(--kube)\">terraform</b> command, full lifecycle — init through destroy, plus state management, workspaces, import, testing, and debugging. Real example values throughout (e.g. <b style=\"color:var(--kube)\">terraform-gke-learning</b>, <b style=\"color:var(--kube)\">google_container_cluster.primary</b>) — swap in your own resource names.",
     "Search terraform commands — e.g. state, workspace, plan, import…",
     "terraform"
   );
