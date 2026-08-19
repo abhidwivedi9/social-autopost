@@ -304,9 +304,9 @@
       <div class="search"><span class="icon">⌕</span>
         <input id="search" placeholder="Search across all topics — symptom, note, command, tag…  ( press / )" autocomplete="off" />
       </div>
-      <button class="btn" id="exportBtn" title="Download the whole vault as JSON">↧ Export</button>
-      <button class="btn" id="importBtn" title="Load a vault JSON file">↥ Import</button>
-      <button class="btn" id="copyJsonBtn" title="Copy whole vault as JSON to paste into chat">⧉ Copy JSON</button>
+      <button class="btn" id="exportBtn" title="Download drills, My Notes, and command notes as one JSON file">↧ Export</button>
+      <button class="btn" id="importBtn" title="Load a vault JSON file (drills + notes)">↥ Import</button>
+      <button class="btn" id="copyJsonBtn" title="Copy drills, My Notes, and command notes as JSON to paste into chat">⧉ Copy JSON</button>
       <input type="file" id="fileInput" accept="application/json" style="display:none" />
     </div>
   </div>
@@ -1818,8 +1818,30 @@
   function closeAll(){$("#pOverlay").classList.remove("show");$("#tOverlay").classList.remove("show");editingProblem=null;editingTopic=null;}
 
   // ============ EXPORT / IMPORT ============
-  function exportJson(){const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="gke-vault-"+new Date().toISOString().slice(0,10)+".json";a.click();URL.revokeObjectURL(a.href);toast("Exported");}
-  function importJson(file){const r=new FileReader();r.onload=()=>{try{const p=JSON.parse(r.result);if(!Array.isArray(p))throw 0;if(!confirm("Import "+p.length+" topics? Replaces current vault (export first)."))return;data=p;activeTopic=data[0]?data[0].id:null;persist();render();toast("Imported");}catch(e){toast("Not a valid vault JSON");}};r.readAsText(file);}
+  // Bundles all three stores (drills, My Notes, per-command ref notes) into one file —
+  // a plain array export (the old format) still imports fine, just without notes/refEdits.
+  function exportBundle(){return {data:data, myNotes:myNotes, refEdits:refEdits, exportedAt:new Date().toISOString()};}
+  function exportJson(){const blob=new Blob([JSON.stringify(exportBundle(),null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="gke-vault-"+new Date().toISOString().slice(0,10)+".json";a.click();URL.revokeObjectURL(a.href);toast("Exported");}
+  function importJson(file){const r=new FileReader();r.onload=()=>{
+    try{
+      const p=JSON.parse(r.result);
+      let newData,newNotes=null,newRefEdits=null;
+      if(Array.isArray(p)){newData=p;}
+      else if(p&&Array.isArray(p.data)){
+        newData=p.data;
+        if(Array.isArray(p.myNotes))newNotes=p.myNotes;
+        if(p.refEdits&&typeof p.refEdits==="object")newRefEdits=p.refEdits;
+      }else throw 0;
+      const parts=[newData.length+" topics"];
+      if(newNotes)parts.push(newNotes.length+" My Notes entries");
+      if(newRefEdits)parts.push(Object.keys(newRefEdits).length+" command notes");
+      if(!confirm("Import "+parts.join(", ")+"? Replaces current vault (export first)."))return;
+      data=newData;activeTopic=data[0]?data[0].id:null;persist();
+      if(newNotes){myNotes=newNotes;persistNotes();}
+      if(newRefEdits){refEdits=newRefEdits;persistRefEdits();}
+      render();toast("Imported");
+    }catch(e){toast("Not a valid vault JSON");}
+  };r.readAsText(file);}
 
   // ============ WIRE ============
   $("#search").addEventListener("input",render);
@@ -1829,7 +1851,7 @@
   $("#tSave").addEventListener("click",saveTopic);
   $("#tDelete").addEventListener("click",deleteTopic);
   $("#exportBtn").addEventListener("click",exportJson);
-  $("#copyJsonBtn").addEventListener("click",()=>copy(JSON.stringify(data,null,2),$("#copyJsonBtn")));
+  $("#copyJsonBtn").addEventListener("click",()=>copy(JSON.stringify(exportBundle(),null,2),$("#copyJsonBtn")));
   $("#importBtn").addEventListener("click",()=>$("#fileInput").click());
   $("#fileInput").addEventListener("change",e=>{if(e.target.files[0])importJson(e.target.files[0]);e.target.value="";});
   document.querySelectorAll("[data-close]").forEach(b=>b.addEventListener("click",closeAll));
