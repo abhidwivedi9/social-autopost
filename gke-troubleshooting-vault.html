@@ -295,6 +295,7 @@
     <button class="vtab" data-view="gke">☁️ GKE Commands</button>
     <button class="vtab" data-view="kubectl">⚙️ kubectl Commands</button>
     <button class="vtab" data-view="terraform">🏗️ Terraform Commands</button>
+    <button class="vtab" data-view="cicd">🔁 CI/CD</button>
     <button class="vtab" data-view="notes">🗒️ My Notes</button>
   </div>
 
@@ -321,6 +322,15 @@
   <div id="kubectlView" style="display:none"></div>
 
   <div id="terraformView" style="display:none"></div>
+
+  <div id="cicdView" style="display:none">
+    <div class="tabs" id="cicdSubTabs">
+      <button class="tab on" data-cicdview="scripts">📜 Scripts</button>
+      <button class="tab" data-cicdview="qa">❓ Q&amp;A</button>
+    </div>
+    <div id="cicdScriptsView"></div>
+    <div id="cicdQAView" style="display:none"></div>
+  </div>
 
   <div id="notesView" style="display:none"></div>
 
@@ -1838,6 +1848,42 @@
     ]}
   ];
 
+  // ============ CI/CD SCRIPTS (progressive — each one adds exactly ONE new concept on top of the last) ============
+  const CICD_SCRIPTS_DATA=[
+    {cat:"1. Basics — Your First Pipeline", commands:[
+      {desc:"Script 1 — the absolute minimum: trigger + checkout + one command", cmd:"# .github/workflows/01-basic.yml\nname: 01 - Basic Build\non:\n  push:\n    branches: [main]\n\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Run the build\n        run: echo \"building the app...\" && npm run build", parts:"<b>NEW HERE:</b> the three things every pipeline needs — a trigger (<b>on: push</b>), a runner (<b>runs-on</b>), and steps. <b>actions/checkout@v4</b> is almost always your first step — without it the runner is an empty VM with no copy of your code at all. In plain words: this just proves 'when I push to main, a machine spins up, gets my code, and runs one command.'"},
+      {desc:"Script 2 — add automated testing (a failing test now blocks the pipeline)", cmd:"# .github/workflows/02-with-tests.yml\nname: 02 - Build and Test\non:\n  push:\n    branches: [main]\n\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Install dependencies\n        run: npm ci\n      - name: Run build\n        run: npm run build\n      - name: Run tests\n        run: npm test", parts:"<b>NEW HERE:</b> a <b>Run tests</b> step, plus <b>npm ci</b> (not npm install — ci does a clean, exact install from the lockfile, which is what you want in CI for reproducibility). In plain words: any step that exits non-zero stops the whole job — so a failing test now genuinely blocks the pipeline, not just prints a warning."},
+      {desc:"Script 3 — add environment variables and a real secret", cmd:"# .github/workflows/03-env-secrets.yml\nname: 03 - Build, Test, with Config\non:\n  push:\n    branches: [main]\n\nenv:\n  NODE_ENV: production\n\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: npm ci\n      - run: npm run build\n      - name: Run tests against a real API key\n        env:\n          API_KEY: ${{ secrets.TEST_API_KEY }}\n        run: npm test", parts:"<b>NEW HERE:</b> a workflow-level <b>env:</b> block (plain, non-secret config, visible in logs) versus a step-level <b>secrets.TEST_API_KEY</b> (pulled from GitHub's encrypted Secrets store, auto-masked in logs). In plain words: never hardcode a real credential in the YAML itself — <b>secrets.X</b> is how you reference something set once in repo/org settings instead."}
+    ]},
+    {cat:"2. Testing, Quality & Build Speed", commands:[
+      {desc:"Script 4 — add a matrix build (test across multiple runtime versions at once)", cmd:"# .github/workflows/04-matrix.yml\nname: 04 - Matrix Test\non:\n  push:\n    branches: [main]\n\njobs:\n  build:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix:\n        node-version: [18, 20, 22]\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with:\n          node-version: ${{ matrix.node-version }}\n      - run: npm ci\n      - run: npm test", parts:"<b>NEW HERE:</b> <b>strategy.matrix</b> — this single job definition actually runs THREE parallel jobs, one per Node version, each substituting <b>${{ matrix.node-version }}</b>. In plain words: instead of copy-pasting the same job three times for three versions, the matrix generates all the copies for you and runs them at once, in parallel."},
+      {desc:"Script 5 — add a lint + coverage quality gate (blocks merge below a threshold)", cmd:"# .github/workflows/05-quality-gate.yml\nname: 05 - Quality Gate\non:\n  push:\n    branches: [main]\n\njobs:\n  quality:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: npm ci\n      - name: Lint\n        run: npm run lint\n      - name: Test with coverage\n        run: npm test -- --coverage\n      - name: Enforce minimum coverage\n        run: |\n          COVERAGE=$(jq '.total.lines.pct' coverage/coverage-summary.json)\n          echo \"Line coverage: $COVERAGE%\"\n          if (( $(echo \"$COVERAGE < 80\" | bc -l) )); then\n            echo \"Coverage $COVERAGE% is below the 80% gate\"\n            exit 1\n          fi", parts:"<b>NEW HERE:</b> a step that reads the coverage report and <b>exit 1</b>s if it's under 80% — turning a number in a report into an actual pipeline-blocking gate. In plain words: 'tests passed' and 'tests covered enough of the code' are two different questions — this script is the second one, enforced automatically instead of trusted on the honor system."},
+      {desc:"Script 6 — add dependency caching for faster builds", cmd:"# .github/workflows/06-caching.yml\nname: 06 - Cached Build\non:\n  push:\n    branches: [main]\n\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 20\n          cache: 'npm'          # built-in cache support in setup-node\n      - run: npm ci\n      - run: npm run build\n      - run: npm test -- --coverage", parts:"<b>NEW HERE:</b> <b>cache: 'npm'</b> on setup-node — it automatically caches <b>node_modules</b>' download cache between runs, keyed on your lockfile hash, so <b>npm ci</b> skips re-downloading unchanged dependencies. In plain words: this is purely a speed optimization — same behavior, but a multi-minute install often drops to seconds once the cache is warm."},
+      {desc:"Script 7 — add path-based triggering (skip the pipeline when nothing relevant changed)", cmd:"# .github/workflows/07-path-filter.yml\nname: 07 - Path-Filtered Build\non:\n  push:\n    branches: [main]\n    paths:\n      - 'services/web/**'\n      - '.github/workflows/07-path-filter.yml'\n\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: npm ci\n      - run: npm run build\n      - run: npm test -- --coverage", parts:"<b>NEW HERE:</b> <b>on.push.paths</b> — this workflow now only triggers when files under <b>services/web/</b> (or the workflow file itself) actually changed. In plain words: in a monorepo with many services, this stops every single push from rebuilding EVERY service's pipeline — only the service whose code actually moved gets rebuilt."}
+    ]},
+    {cat:"3. Containers & Registries", commands:[
+      {desc:"Script 8 — build a Docker image (validation only, nothing pushed yet)", cmd:"# .github/workflows/08-docker-build.yml\nname: 08 - Docker Build (validate only)\non:\n  push:\n    branches: [main]\n\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Build the image (local only, not pushed anywhere)\n        run: docker build -t web:${{ github.sha }} .\n      - name: Sanity-check the image actually runs\n        run: |\n          docker run -d --name smoketest -p 8080:8080 web:${{ github.sha }}\n          sleep 3\n          curl -f http://localhost:8080/healthz\n          docker rm -f smoketest", parts:"<b>NEW HERE:</b> <b>docker build</b>, tagged with <b>${{ github.sha }}</b> (the exact commit hash, not a floating tag like 'latest'). In plain words: this proves the image builds AND actually starts and answers a health check — before we ever bother pushing anything to a registry, catch a broken Dockerfile/entrypoint here."},
+      {desc:"Script 9 — push the image to Artifact Registry with proper keyless auth", cmd:"# .github/workflows/09-push-registry.yml\nname: 09 - Build and Push\non:\n  push:\n    branches: [main]\n\npermissions:\n  id-token: write   # required for keyless OIDC auth to GCP\n  contents: read\n\njobs:\n  build-push:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - name: Authenticate to GCP (Workload Identity Federation — no static key)\n        uses: google-github-actions/auth@v2\n        with:\n          workload_identity_provider: projects/123456789/locations/global/workloadIdentityPools/gh-pool/providers/gh-provider\n          service_account: ci-deployer@terraform-gke-learning.iam.gserviceaccount.com\n      - run: gcloud auth configure-docker asia-south1-docker.pkg.dev --quiet\n      - name: Build and push\n        run: |\n          docker build -t asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }} .\n          docker push asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }}", parts:"<b>NEW HERE:</b> <b>permissions: id-token: write</b> plus <b>google-github-actions/auth</b> — this is keyless OIDC auth (Workload Identity Federation): GitHub proves its own identity to GCP directly, no downloaded service-account JSON key sitting in repo secrets at all. In plain words: this is the 'right' way to let CI talk to GCP — nothing long-lived to leak or rotate."},
+      {desc:"Script 10 — add a vulnerability scan gate (fails the build on critical CVEs)", cmd:"# .github/workflows/10-vuln-scan.yml\nname: 10 - Build, Push, Scan\non:\n  push:\n    branches: [main]\n\npermissions:\n  id-token: write\n  contents: read\n\njobs:\n  build-push-scan:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: google-github-actions/auth@v2\n        with:\n          workload_identity_provider: projects/123456789/locations/global/workloadIdentityPools/gh-pool/providers/gh-provider\n          service_account: ci-deployer@terraform-gke-learning.iam.gserviceaccount.com\n      - run: gcloud auth configure-docker asia-south1-docker.pkg.dev --quiet\n      - run: docker build -t asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }} .\n      - name: Scan for critical/high vulnerabilities BEFORE pushing\n        uses: aquasecurity/trivy-action@0.24.0\n        with:\n          image-ref: asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }}\n          severity: CRITICAL,HIGH\n          exit-code: '1'          # non-zero exit fails the job on any match\n      - name: Push (only reached if the scan passed)\n        run: docker push asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }}", parts:"<b>NEW HERE:</b> a Trivy scan step BEFORE the push step, with <b>exit-code: '1'</b> so any CRITICAL/HIGH CVE fails the job outright. In plain words: order matters here — scanning happens before push specifically so a vulnerable image never even reaches the registry, not just 'gets flagged after the fact.'"}
+    ]},
+    {cat:"4. Deploying to Kubernetes", commands:[
+      {desc:"Script 11 — deploy to a single dev environment", cmd:"# .github/workflows/11-deploy-dev.yml\nname: 11 - Deploy to Dev\non:\n  push:\n    branches: [main]\n\npermissions: { id-token: write, contents: read }\n\njobs:\n  build-push:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: google-github-actions/auth@v2\n        with: { workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/gh-pool/providers/gh-provider', service_account: 'ci-deployer@terraform-gke-learning.iam.gserviceaccount.com' }\n      - run: gcloud auth configure-docker asia-south1-docker.pkg.dev --quiet\n      - run: |\n          docker build -t asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }} .\n          docker push asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }}\n\n  deploy-dev:\n    needs: build-push\n    runs-on: ubuntu-latest\n    steps:\n      - uses: google-github-actions/auth@v2\n        with: { workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/gh-pool/providers/gh-provider', service_account: 'ci-deployer@terraform-gke-learning.iam.gserviceaccount.com' }\n      - uses: google-github-actions/get-gke-credentials@v2\n        with: { cluster_name: terraform-gke-cluster, location: asia-south1 }\n      - run: kubectl set image deployment/web web=asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }} -n dev\n      - run: kubectl rollout status deployment/web -n dev --timeout=120s", parts:"<b>NEW HERE:</b> a SECOND job (<b>deploy-dev</b>) that <b>needs: build-push</b> — jobs run on fresh, separate runners by default, so <b>needs</b> is what makes deploy wait for build to finish AND makes the image tag/auth available to it. In plain words: build and deploy are now two distinct stages, chained together instead of one giant job doing everything."},
+      {desc:"Script 12 — promote through dev then staging (environment chain)", cmd:"# .github/workflows/12-promote-staging.yml (deploy jobs only shown — build-push job same as script 11)\njobs:\n  build-push:\n    # ...same as script 11...\n\n  deploy-dev:\n    needs: build-push\n    runs-on: ubuntu-latest\n    environment: dev\n    steps:\n      - uses: google-github-actions/auth@v2\n        with: { workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/gh-pool/providers/gh-provider', service_account: 'ci-deployer@terraform-gke-learning.iam.gserviceaccount.com' }\n      - uses: google-github-actions/get-gke-credentials@v2\n        with: { cluster_name: terraform-gke-cluster, location: asia-south1 }\n      - run: kubectl set image deployment/web web=asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }} -n dev\n      - run: kubectl rollout status deployment/web -n dev --timeout=120s\n\n  deploy-staging:\n    needs: [build-push, deploy-dev]     # only starts after dev succeeds\n    runs-on: ubuntu-latest\n    environment: staging\n    steps:\n      - uses: google-github-actions/auth@v2\n        with: { workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/gh-pool/providers/gh-provider', service_account: 'ci-deployer@terraform-gke-learning.iam.gserviceaccount.com' }\n      - uses: google-github-actions/get-gke-credentials@v2\n        with: { cluster_name: terraform-gke-cluster, location: asia-south1 }\n      - run: kubectl set image deployment/web web=asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }} -n staging\n      - run: kubectl rollout status deployment/web -n staging --timeout=120s", parts:"<b>NEW HERE:</b> <b>needs: [build-push, deploy-dev]</b> on the staging job — this chains THREE stages, and staging genuinely will not start if dev's rollout failed. In plain words: this is the actual mechanism behind 'promote through environments' — it's just a dependency graph between jobs, each one gated on the previous one's success."},
+      {desc:"Script 13 — add a manual approval gate before production", cmd:"# .github/workflows/13-manual-approval.yml (deploy-production job — dev/staging jobs same as script 12)\njobs:\n  # ...build-push, deploy-dev, deploy-staging same as script 12...\n\n  deploy-production:\n    needs: [build-push, deploy-staging]\n    runs-on: ubuntu-latest\n    environment: production   # <-- configure 'Required reviewers' on this Environment in repo Settings\n    steps:\n      - uses: google-github-actions/auth@v2\n        with: { workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/gh-pool/providers/gh-provider', service_account: 'ci-deployer@terraform-gke-learning.iam.gserviceaccount.com' }\n      - uses: google-github-actions/get-gke-credentials@v2\n        with: { cluster_name: terraform-gke-cluster, location: asia-south1 }\n      - run: kubectl set image deployment/web web=asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }} -n production\n      - run: kubectl rollout status deployment/web -n production --timeout=180s", parts:"<b>NEW HERE:</b> nothing new in the YAML syntax itself — the gate is a REPO SETTING: go to Settings → Environments → production → add 'Required reviewers'. In plain words: the job literally pauses and shows 'Waiting for approval' in the Actions UI until someone with permission clicks Approve — no custom scripting needed, it's a native GitHub feature tied to the <b>environment:</b> key."}
+    ]},
+    {cat:"5. Advanced Deployment Strategies", commands:[
+      {desc:"Script 14 — add automatic rollback if the rollout fails", cmd:"# .github/workflows/14-auto-rollback.yml (deploy-production step only — rest same as script 13)\n  deploy-production:\n    needs: [build-push, deploy-staging]\n    runs-on: ubuntu-latest\n    environment: production\n    steps:\n      - uses: google-github-actions/auth@v2\n        with: { workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/gh-pool/providers/gh-provider', service_account: 'ci-deployer@terraform-gke-learning.iam.gserviceaccount.com' }\n      - uses: google-github-actions/get-gke-credentials@v2\n        with: { cluster_name: terraform-gke-cluster, location: asia-south1 }\n      - name: Deploy and verify — roll back automatically on failure\n        run: |\n          kubectl set image deployment/web web=asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }} -n production\n          if ! kubectl rollout status deployment/web -n production --timeout=180s; then\n            echo \"Rollout failed — rolling back to the previous revision\"\n            kubectl rollout undo deployment/web -n production\n            kubectl rollout status deployment/web -n production --timeout=120s\n            exit 1\n          fi", parts:"<b>NEW HERE:</b> the <b>if ! kubectl rollout status ...; then ... fi</b> block — if the new version never becomes Ready within the timeout, the script runs <b>kubectl rollout undo</b> itself, then still <b>exit 1</b>s so the pipeline is correctly marked failed even though production was safely reverted. In plain words: 'deployed' and 'deployed successfully' are different — this makes the pipeline actively fix production instead of just reporting failure and leaving it broken."},
+      {desc:"Script 15 — add a real post-deploy smoke test (not just rollout status)", cmd:"# .github/workflows/15-smoke-test.yml (deploy-production step only)\n  deploy-production:\n    needs: [build-push, deploy-staging]\n    runs-on: ubuntu-latest\n    environment: production\n    steps:\n      - uses: google-github-actions/auth@v2\n        with: { workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/gh-pool/providers/gh-provider', service_account: 'ci-deployer@terraform-gke-learning.iam.gserviceaccount.com' }\n      - uses: google-github-actions/get-gke-credentials@v2\n        with: { cluster_name: terraform-gke-cluster, location: asia-south1 }\n      - run: |\n          kubectl set image deployment/web web=asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }} -n production\n          kubectl rollout status deployment/web -n production --timeout=180s\n      - name: Smoke test — hit the REAL endpoint, not just check pod readiness\n        run: |\n          for i in 1 2 3 4 5; do\n            if curl -sf --max-time 5 https://app.example.com/healthz; then\n              echo \"Smoke test passed\"; exit 0\n            fi\n            sleep 5\n          done\n          echo \"Smoke test failed after 5 attempts — rolling back\"\n          kubectl rollout undo deployment/web -n production\n          exit 1", parts:"<b>NEW HERE:</b> a real <b>curl</b> against the live URL, with retries, AFTER rollout status already says Ready. In plain words: <b>kubectl rollout status</b> only proves the pod passed its readiness PROBE — it says nothing about whether the app's actual business logic works end-to-end. This is the difference between 'the container is up' and 'the product actually works.'"},
+      {desc:"Script 16 — canary deployment with automated, metric-driven rollback", cmd:"# .github/workflows/16-canary.yml (deploy-production step only — triggers an Argo Rollouts canary)\n  deploy-production:\n    needs: [build-push, deploy-staging]\n    runs-on: ubuntu-latest\n    environment: production\n    steps:\n      - uses: google-github-actions/auth@v2\n        with: { workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/gh-pool/providers/gh-provider', service_account: 'ci-deployer@terraform-gke-learning.iam.gserviceaccount.com' }\n      - uses: google-github-actions/get-gke-credentials@v2\n        with: { cluster_name: terraform-gke-cluster, location: asia-south1 }\n      - name: Trigger the canary rollout (weights + Prometheus analysis defined in the Rollout object itself)\n        run: |\n          kubectl argo rollouts set image web web=asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }} -n production\n          kubectl argo rollouts status web -n production --timeout=900s   # blocks until the FULL staged rollout finishes or auto-aborts", parts:"<b>NEW HERE:</b> <b>kubectl argo rollouts</b> instead of <b>kubectl set image</b> + <b>rollout status</b> — this pipeline step doesn't control the canary logic itself at all; it just triggers a Rollout object whose <b>steps:</b> (weight 10% → analyze → 30% → analyze → 100%) and Prometheus error-rate <b>AnalysisTemplate</b> do the real work outside the CI job. In plain words: canary strategy lives in Kubernetes, not in the pipeline script — the pipeline just presses the button and watches."}
+    ]},
+    {cat:"6. Production-Grade Patterns", commands:[
+      {desc:"Script 17 — blue-green deployment via an instant Service cutover", cmd:"# .github/workflows/17-blue-green.yml (deploy-production step only)\n  deploy-production:\n    needs: [build-push, deploy-staging]\n    runs-on: ubuntu-latest\n    environment: production\n    steps:\n      - uses: google-github-actions/auth@v2\n        with: { workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/gh-pool/providers/gh-provider', service_account: 'ci-deployer@terraform-gke-learning.iam.gserviceaccount.com' }\n      - uses: google-github-actions/get-gke-credentials@v2\n        with: { cluster_name: terraform-gke-cluster, location: asia-south1 }\n      - name: Deploy to the IDLE color, verify, then cut traffic over\n        run: |\n          ACTIVE=$(kubectl get svc web -n production -o jsonpath='{.spec.selector.color}')\n          TARGET=$([ \"$ACTIVE\" = \"blue\" ] && echo green || echo blue)\n          kubectl set image deployment/web-$TARGET web=asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }} -n production\n          kubectl rollout status deployment/web-$TARGET -n production --timeout=180s\n          curl -sf --max-time 5 http://web-$TARGET-internal.production.svc.cluster.local/healthz || { echo \"idle color failed health check, not cutting over\"; exit 1; }\n          kubectl patch svc web -n production -p '{\"spec\":{\"selector\":{\"color\":\"'$TARGET'\"}}}'\n          echo \"Traffic cut over to $TARGET\"", parts:"<b>NEW HERE:</b> deploying to the OTHER color first (never the one currently live), verifying it, THEN patching the Service selector — traffic only moves in one atomic step, at the very end. In plain words: 100% of production is protected right up until the last line — rollback here is just patching the selector back, not a redeploy."},
+      {desc:"Script 18 — add Slack notifications on success and failure", cmd:"# .github/workflows/18-notifications.yml (added as final steps after deploy-production)\n  deploy-production:\n    # ...deploy + verify steps from script 15/17...\n    steps:\n      # ...(deploy + smoke test steps)...\n      - name: Notify Slack on success\n        if: success()\n        run: |\n          curl -X POST -H 'Content-type: application/json' \\\n            --data '{\"text\":\"✅ web deployed to production — ${{ github.sha }}\"}' \\\n            ${{ secrets.SLACK_WEBHOOK_URL }}\n      - name: Notify Slack on failure\n        if: failure()\n        run: |\n          curl -X POST -H 'Content-type: application/json' \\\n            --data '{\"text\":\"🚨 production deploy FAILED for ${{ github.sha }} — check Actions log\"}' \\\n            ${{ secrets.SLACK_WEBHOOK_URL }}", parts:"<b>NEW HERE:</b> <b>if: success()</b> / <b>if: failure()</b> — step-level conditionals that check the outcome of EARLIER steps in the same job. In plain words: by default a step only runs if everything before it passed; <b>if: failure()</b> deliberately runs a step ONLY when something already broke, which is exactly what you want for an alert — most people forget this and never learn about a silent failure until someone complains."},
+      {desc:"Script 19 — refactor into a reusable workflow (build once, promote by digest)", cmd:"# .github/workflows/19-reusable-caller.yml — the orchestrator, calls the SAME deploy job three times\nname: 19 - Build Once, Promote Everywhere\non:\n  push:\n    branches: [main]\n\npermissions: { id-token: write, contents: read }\n\njobs:\n  build:\n    runs-on: ubuntu-latest\n    outputs: { digest: ${{ steps.push.outputs.digest }} }\n    steps:\n      - uses: actions/checkout@v4\n      - uses: google-github-actions/auth@v2\n        with: { workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/gh-pool/providers/gh-provider', service_account: 'ci-deployer@terraform-gke-learning.iam.gserviceaccount.com' }\n      - run: gcloud auth configure-docker asia-south1-docker.pkg.dev --quiet\n      - id: push\n        run: |\n          docker build -t asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }} .\n          docker push asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }}\n          DIGEST=$(gcloud artifacts docker images describe asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }} --format='get(image_summary.digest)')\n          echo \"digest=$DIGEST\" >> \"$GITHUB_OUTPUT\"\n\n  deploy-dev: { needs: build, uses: ./.github/workflows/_deploy.yml, with: { environment: dev, image_digest: ${{ needs.build.outputs.digest }} } }\n  deploy-staging: { needs: [build, deploy-dev], uses: ./.github/workflows/_deploy.yml, with: { environment: staging, image_digest: ${{ needs.build.outputs.digest }} } }\n  deploy-production: { needs: [build, deploy-staging], uses: ./.github/workflows/_deploy.yml, with: { environment: production, image_digest: ${{ needs.build.outputs.digest }} } }\n\n# .github/workflows/_deploy.yml — the reusable worker, one copy instead of three near-duplicates\non:\n  workflow_call:\n    inputs: { environment: { required: true, type: string }, image_digest: { required: true, type: string } }\njobs:\n  deploy:\n    runs-on: ubuntu-latest\n    environment: ${{ inputs.environment }}\n    steps:\n      - uses: google-github-actions/auth@v2\n        with: { workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/gh-pool/providers/gh-provider', service_account: 'ci-deployer@terraform-gke-learning.iam.gserviceaccount.com' }\n      - uses: google-github-actions/get-gke-credentials@v2\n        with: { cluster_name: terraform-gke-cluster, location: asia-south1 }\n      - run: |\n          kubectl set image deployment/web web=asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web@${{ inputs.image_digest }} -n ${{ inputs.environment }}\n          kubectl rollout status deployment/web -n ${{ inputs.environment }} --timeout=180s", parts:"<b>NEW HERE:</b> <b>workflow_call</b> — the deploy logic exists ONCE, in <b>_deploy.yml</b>, and every environment calls it with different inputs instead of near-duplicating the same steps three times. Also: deploying by <b>@digest</b> (content-addressable, immutable) instead of by mutable tag. In plain words: this is what 'build once, promote everywhere' actually looks like in YAML — one build, one artifact identity (the digest), reused unchanged all the way to production."},
+      {desc:"Script 20 — the capstone: everything combined, plus concurrency control", cmd:"# .github/workflows/20-production-grade.yml — combines every concept above into one real pipeline\nname: 20 - Production-Grade Pipeline\non:\n  push:\n    branches: [main]\n    paths: ['services/web/**']\n\nconcurrency:\n  group: deploy-web-production\n  cancel-in-progress: false   # let an in-flight production deploy finish; don't cancel it mid-rollout\n\npermissions: { id-token: write, contents: read }\n\njobs:\n  quality:\n    runs-on: ubuntu-latest\n    strategy: { matrix: { node-version: [18, 20, 22] } }\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with: { node-version: '${{ matrix.node-version }}', cache: 'npm' }\n      - run: npm ci\n      - run: npm run lint\n      - run: npm test -- --coverage\n\n  build-push-scan:\n    needs: quality\n    runs-on: ubuntu-latest\n    outputs: { digest: ${{ steps.push.outputs.digest }} }\n    steps:\n      - uses: actions/checkout@v4\n      - uses: google-github-actions/auth@v2\n        with: { workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/gh-pool/providers/gh-provider', service_account: 'ci-deployer@terraform-gke-learning.iam.gserviceaccount.com' }\n      - run: gcloud auth configure-docker asia-south1-docker.pkg.dev --quiet\n      - run: docker build -t asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }} .\n      - uses: aquasecurity/trivy-action@0.24.0\n        with: { image-ref: 'asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }}', severity: 'CRITICAL,HIGH', exit-code: '1' }\n      - id: push\n        run: |\n          docker push asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }}\n          DIGEST=$(gcloud artifacts docker images describe asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web:${{ github.sha }} --format='get(image_summary.digest)')\n          echo \"digest=$DIGEST\" >> \"$GITHUB_OUTPUT\"\n\n  deploy-dev: { needs: build-push-scan, uses: ./.github/workflows/_deploy.yml, with: { environment: dev, image_digest: '${{ needs.build-push-scan.outputs.digest }}' } }\n  deploy-staging: { needs: [build-push-scan, deploy-dev], uses: ./.github/workflows/_deploy.yml, with: { environment: staging, image_digest: '${{ needs.build-push-scan.outputs.digest }}' } }\n\n  deploy-production:\n    needs: [build-push-scan, deploy-staging]\n    runs-on: ubuntu-latest\n    environment: production        # manual approval gate — Required reviewers set in repo Settings\n    steps:\n      - uses: google-github-actions/auth@v2\n        with: { workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/gh-pool/providers/gh-provider', service_account: 'ci-deployer@terraform-gke-learning.iam.gserviceaccount.com' }\n      - uses: google-github-actions/get-gke-credentials@v2\n        with: { cluster_name: terraform-gke-cluster, location: asia-south1 }\n      - name: Deploy, verify, roll back automatically on failure\n        run: |\n          kubectl set image deployment/web web=asia-south1-docker.pkg.dev/terraform-gke-learning/web-repo/web@${{ needs.build-push-scan.outputs.digest }} -n production\n          if ! kubectl rollout status deployment/web -n production --timeout=180s; then\n            kubectl rollout undo deployment/web -n production; exit 1\n          fi\n          curl -sf --max-time 5 https://app.example.com/healthz || { kubectl rollout undo deployment/web -n production; exit 1; }\n      - name: Notify Slack\n        if: always()\n        run: |\n          STATUS=$([ \"${{ job.status }}\" = \"success\" ] && echo \"✅ succeeded\" || echo \"🚨 FAILED\")\n          curl -X POST -H 'Content-type: application/json' --data '{\"text\":\"web production deploy '\"$STATUS\"' — ${{ github.sha }}\"}' ${{ secrets.SLACK_WEBHOOK_URL }}", parts:"<b>NEW HERE:</b> <b>concurrency:</b> — this is the one genuinely new concept: it guarantees only ONE production deploy for this app can be in flight at a time, so two rushed merges can't race each other into production simultaneously and corrupt the rollout. Everything else here is every concept from scripts 1-19 combined into one real pipeline: quality gate → matrix tests → scan → digest-based build-once → dev → staging → approval-gated production → auto-rollback → smoke test → notification. In plain words: this is what a senior engineer's actual production pipeline looks like — not because any single piece is exotic, but because all of it is stacked together and nothing is skipped."}
+    ]}
+  ];
+
   // ============ Per-command user notes on Command Reference (separate storage, additive to seed) ============
   const REFEDITS_LS_KEY="gke_vault_refedits_v1";
   function loadRefEdits(){
@@ -1972,6 +2018,12 @@
     "Search terraform commands — e.g. state, workspace, plan, import…",
     "terraform"
   );
+  const renderCicdScripts=makeRefRenderer(
+    "#cicdScriptsView", CICD_SCRIPTS_DATA,
+    "20 CI/CD pipelines, ordered <b style=\"color:var(--kube)\">basic → advanced</b> — each script adds exactly ONE new concept on top of the previous one (read the note under each script for what's new and why). By script 20 every concept is combined into one real production-grade pipeline. Written as GitHub Actions YAML with real example values (<b style=\"color:var(--kube)\">terraform-gke-cluster</b>, <b style=\"color:var(--kube)\">web-repo</b>) — the same concepts apply directly to Jenkins/GitLab CI, just different syntax.",
+    "Search scripts — e.g. canary, rollback, matrix, secrets…",
+    "cicd-scripts"
+  );
 
   // ============ MY NOTES (separate scratchpad, own storage key) ============
   const NOTES_LS_KEY="gke_vault_mynotes_v1";
@@ -2086,6 +2138,159 @@
       });
     }
     return el;
+  }
+
+  // ============ CI/CD Q&A (seeded, fully editable — same merge pattern as SEED drills) ============
+  const CICDQA_SEED=[
+    {id:"qa-1", q:"How do you decide whether a team should use GitOps (Argo CD/Flux) versus a push-based pipeline (CI directly runs kubectl/helm)?",
+      a:"Push-based is simpler to set up and reason about for a small number of services — the CI job has direct cluster credentials and just applies the change. It stops scaling cleanly once you have many services/clusters: credentials are scattered across every pipeline, there's no single source of truth for 'what's actually running,' and drift (someone kubectl-edits something by hand) is invisible. GitOps flips the model — the cluster continuously reconciles itself against a git repo, CI's job is only to update that repo (bump an image tag), and the operator (Argo CD/Flux) does the actual apply from inside the cluster, using its own in-cluster credentials, not CI's. That gives you a real audit trail (every change is a git commit), automatic drift correction, and no cluster credentials living in CI at all. The trade-off is complexity — a second system to run and understand, and a slight delay between 'CI updated the repo' and 'cluster actually converged.' Rule of thumb: single service, one cluster, small team — push-based is fine. Multiple clusters/environments, compliance requirements around audit trails, or drift has bitten you before — GitOps earns its complexity."},
+    {id:"qa-2", q:"How do you think about DORA metrics (deployment frequency, lead time for changes, change failure rate, MTTR) in practice, not just as dashboard numbers?",
+      a:"The four together tell you whether you're actually fast AND safe, not just one or the other — that's the whole point of tracking them as a set. High deployment frequency with a high change failure rate means you're moving fast and breaking things, not actually succeeding. Low change failure rate with terrible lead time means you're safe but slow, often from too much process/manual gates. In practice, lead time (commit to production) is the one most worth instrumenting first, because it exposes exactly where time is being lost — usually it's NOT the pipeline's actual runtime, it's queueing: waiting for a manual approval, waiting for a shared staging environment to be free, waiting for a batched release train. MTTR is the one most correlated with actual incident severity for users, and the biggest lever for it is almost always deployment/rollback speed — if a bad deploy takes 20 minutes to detect and 15 to roll back, that's your MTTR floor regardless of how good your on-call process is."},
+    {id:"qa-3", q:"Walk me through migrating a legacy deploy process (e.g., SSH + shell script) to a modern CI/CD pipeline for a system with real production traffic — how do you do it without an outage?",
+      a:"Never do a big-bang cutover on the deploy mechanism itself while it's also carrying live traffic risk — migrate the PIPELINE first in shadow/parallel mode before it's the thing of record. Concretely: stand up the new pipeline (build, test, artifact) fully, but have it deploy to a NEW environment/namespace that isn't taking real traffic yet — validate the new mechanism produces identical, working deployments there first. Once confident, do the actual cutover as its own small, reversible, low-risk change: point the new pipeline at production but keep the old script available and documented as a manual fallback for one release cycle, not deleted immediately. The traffic-affecting risk and the tooling-migration risk should never be the same change — the old script's rollback path should still work as an escape hatch until the new pipeline has proven itself in production at least once."},
+    {id:"qa-4", q:"How do you structure CI/CD for infrastructure (Terraform) alongside application deployments — same pipeline, same branching, same promotion path?",
+      a:"Keep them as separate pipelines with different cadences and different blast-radius profiles, even if they share a repo. App deploys should be frequent, fast, and largely automated — infra changes should be rarer, always plan-then-apply with a human review of the plan diff, and never auto-applied on every push the way an app image might be. The coupling that DOES matter: app deploys shouldn't silently proceed against infra that's mid-change or in a known-bad state — a common pattern is having the app pipeline check 'is there a pending/failed Terraform plan for this environment' as a pre-flight gate, without actually running Terraform itself. Promotion-wise, infra usually promotes environment-by-environment on its own schedule (dev, prove it, then staging, then prod), same principle as app promotion but on a much slower, more deliberate cadence — never share the exact same trigger/approval mechanism for both, since a single 'approve' click shouldn't simultaneously ship an app version AND change infrastructure."},
+    {id:"qa-5", q:"A CI/CD pipeline itself just pushed a bad deploy straight to production, past all your gates. Walk through your incident response end to end.",
+      a:"First move is always mitigate before investigate — roll back (kubectl rollout undo / redeploy the last known-good digest / GitOps revert commit) before spending any time figuring out WHY the gates missed it; every minute spent debugging root cause while production stays broken is minutes of user impact. Once mitigated, freeze the pipeline (disable auto-deploy or require manual approval on the environment) so nothing else can deploy while you investigate — this stops a second bad deploy landing mid-incident. Then work backward through the actual gates that should have caught it: did tests genuinely cover this case, did the health check actually exercise the failing code path, did the canary/staged rollout get skipped or misconfigured. The real post-incident deliverable isn't just 'we rolled back' — it's identifying which SPECIFIC gate had a gap and closing that gap (a new test, a stricter health check, fixing a misconfigured canary weight) so the exact same failure mode can't slip through silently again. Blameless postmortem, timeline with exact timestamps, and the fix committed as its own tracked follow-up — not just verbal agreement to 'be more careful.'"},
+    {id:"qa-6", q:"How do you enforce security/compliance (image scanning, SBOM, signed artifacts, SOC2-style audit requirements) in CI/CD without making every team's pipeline painfully slow?",
+      a:"Push the expensive/slow checks as early and as parallel as possible, and make them fail fast with a specific, actionable message — not a generic 'security check failed.' Vulnerability scanning and lint/SAST should run in parallel with unit tests, not serially after them, so they don't add wall-clock time on the happy path. For compliance requirements like SBOM generation and artifact signing (cosign/Sigstore), bake them into the SAME step that builds/pushes the image rather than a separate downstream job — it's marginal extra time on an already-necessary step versus a whole extra pipeline stage. The org-level lever that matters most: centralize these checks into a shared, versioned reusable workflow/pipeline template that every team's pipeline calls into, rather than each team hand-rolling their own scanning config — that's both how you guarantee consistent enforcement across dozens of teams AND how you improve the checks (faster scanner, better caching) for everyone at once instead of team-by-team."},
+    {id:"qa-7", q:"How would you design CI/CD for a multi-cloud or hybrid (on-prem + cloud) environment?",
+      a:"Keep the BUILD stage cloud-agnostic and centralize it — one artifact, one registry (or a registry with cross-region/cross-cloud replication), built once regardless of where it'll eventually run. Where multi-cloud gets genuinely hard is the DEPLOY stage, because auth, networking, and the deployment tooling itself usually differ per target (GKE vs EKS vs on-prem kubeadm cluster) — the practical answer is a thin abstraction layer per target (a reusable workflow per cloud, each handling ITS OWN auth/kubectl-equivalent) that all get called with the same artifact digest, rather than trying to force one deploy script to handle every target's quirks with a pile of if/else. Secrets/credentials management is the other real difference — don't assume one secret manager works everywhere; each environment's deploy job should fetch credentials from whatever that environment's native secret store is, and the pipeline orchestration layer just needs to know WHICH one to call, not replicate the auth logic itself."},
+    {id:"qa-8", q:"You're running thousands of pipeline runs a day and the CI bill is becoming a real cost center — how do you bring that down without sacrificing safety?",
+      a:"Start by actually measuring where the spend goes — runner minutes broken down by job type usually reveals a small number of expensive, frequently-run jobs (e.g. a full E2E suite running on every single push instead of only pre-merge) driving most of the cost, not an even spread. The biggest levers, roughly in order of impact-to-effort: aggressive caching (dependencies, build layers, test results for unchanged code) since re-doing unchanged work is pure waste; path-based/monorepo-aware triggering so unrelated services don't rebuild on every push; right-sizing runners (a lint job doesn't need the same machine as a full integration-test job); and tiering test suites — fast unit tests on every push, slower E2E/integration suites only pre-merge or on a schedule, not on every single commit to a feature branch. The trap to avoid: cutting SAFETY checks (skipping tests, removing scan gates) to save money — that just trades a visible cost for an invisible, much larger one the next time something ships broken."},
+    {id:"qa-9", q:"How do you test changes to the CI/CD pipeline itself — how do you test the tests?",
+      a:"Treat pipeline config with the same rigor as application code: version it, review it via PR like anything else, and validate it in a way that doesn't require actually deploying to production to find out it's broken. For GitHub Actions specifically, tools like `act` let you run workflows locally before pushing; for Jenkins, a Jenkinsfile can be linted via the Jenkins CLI's declarative pipeline linter without triggering a real build. Beyond syntax validation, the real test is a staging/canary pipeline change — apply the new pipeline logic against a LOW-STAKES environment first (e.g., let it deploy to dev for a few cycles) before trusting it against production's approval-gated job, exactly the same 'don't let a risky change touch prod first' principle you'd apply to application code. For genuinely critical pipeline logic (like the rollback mechanism itself), it's worth periodically deliberately triggering a failure in a non-prod environment just to confirm the rollback path still actually works — an untested rollback script is a rollback script you don't actually have."},
+    {id:"qa-10", q:"How do you structure CI/CD ownership across a large engineering org — one central platform team owning all pipelines, or every team owns its own?",
+      a:"The pattern that scales best in practice is neither pure extreme — it's a platform team owning shared, reusable BUILDING BLOCKS (reusable workflows/templates, the scanning/signing steps, the deploy-to-GKE action, the rollback logic) while individual teams own the composition of those blocks into their own service's specific pipeline. Fully centralized (platform team hand-maintains every team's actual pipeline file) doesn't scale past a certain org size — the platform team becomes a bottleneck for every small pipeline tweak. Fully decentralized (every team invents its own patterns from scratch) leads to wildly inconsistent security posture and duplicated effort re-solving the same problems. The concrete mechanism for the middle path is exactly the reusable-workflow pattern (workflow_call in GitHub Actions, shared libraries in Jenkins) — the platform team versions and improves the shared logic centrally, teams pull in a specific version and only customize the parts that are genuinely service-specific (which environments, what tests to run), and a platform-level fix or security improvement rolls out to everyone by bumping a version reference rather than editing dozens of individual pipeline files by hand."}
+  ];
+  const CICDQA_LS_KEY="gke_vault_cicdqa_v1";
+  function mergeCicdQASeed(arr){
+    CICDQA_SEED.forEach(seedQA=>{
+      if(!arr.find(x=>x.id===seedQA.id)){
+        arr.push({id:seedQA.id, q:seedQA.q, a:seedQA.a, updated:Date.now()});
+      }
+    });
+    return arr;
+  }
+  function loadCicdQA(){
+    let base=null;
+    try{const raw=localStorage.getItem(CICDQA_LS_KEY);if(raw){const p=JSON.parse(raw);if(Array.isArray(p))base=p;}}catch(e){}
+    if(!base)base=[];
+    return mergeCicdQASeed(base);
+  }
+  function persistCicdQA(){
+    try{localStorage.setItem(CICDQA_LS_KEY,JSON.stringify(cicdQA));}
+    catch(e){toast("Can't save in preview — download the file to enable saving");}
+    syncPush("vault/cicdQAJson",cicdQA);
+  }
+  let cicdQA=loadCicdQA();
+  let cicdQAOpen={}, cicdQAEditing={}, cicdQASearch="";
+  function nextQAId(){return "qa-"+Date.now().toString(36)+Math.random().toString(36).slice(2,5);}
+
+  function renderCicdQA(){
+    const view=$("#cicdQAView");view.innerHTML="";
+    const intro=document.createElement("div");
+    intro.className="refintro";
+    intro.textContent="10 CI/CD interview Q&A written at a 10+ years experience level — every question and answer is fully editable in place, and you can add your own below. Search across all of them.";
+    view.appendChild(intro);
+
+    const top=document.createElement("div");
+    top.className="searchrow";
+    top.style.marginBottom="16px";
+    top.innerHTML=`<div class="search"><span class="icon">⌕</span><input id="cicdQASearch" placeholder="Search Q&A…" autocomplete="off" /></div>
+      <button class="btn primary" id="addCicdQABtn">＋ Add Q&amp;A</button>`;
+    view.appendChild(top);
+    const sInput=top.querySelector("#cicdQASearch");
+    sInput.value=cicdQASearch;
+    sInput.addEventListener("input",()=>{cicdQASearch=sInput.value;renderCicdQAList();});
+    top.querySelector("#addCicdQABtn").addEventListener("click",()=>{
+      const n={id:nextQAId(),q:"",a:"",updated:Date.now()};
+      cicdQA.unshift(n);cicdQAEditing[n.id]=true;cicdQAOpen[n.id]=true;
+      persistCicdQA();renderCicdQAList();
+    });
+
+    const list=document.createElement("div");list.id="cicdQAList";
+    view.appendChild(list);
+    renderCicdQAList();
+
+    function renderCicdQAList(){
+      const list=$("#cicdQAList");list.innerHTML="";
+      const q=cicdQASearch.trim().toLowerCase();
+      const shown=cicdQA.filter(n=>!q||(n.q+" "+n.a).toLowerCase().includes(q));
+      if(!shown.length){
+        const e=document.createElement("div");e.className="empty";
+        e.textContent=cicdQA.length?'No Q&A match "'+q+'"':"No Q&A yet — click ＋ Add Q&A to start.";
+        list.appendChild(e);return;
+      }
+      shown.forEach(n=>list.appendChild(qaCard(n)));
+    }
+  }
+
+  function qaCard(n){
+    const el=document.createElement("div");
+    const editing=!!cicdQAEditing[n.id];
+    const open=editing||!!cicdQAOpen[n.id];
+    el.className="mynote"+(open?" open":"");
+    const qText=n.q||"(untitled question)";
+
+    if(editing){
+      el.innerHTML=`<div class="mynote-head"><span class="mtitle">${n.q?esc(n.q):"New Q&A"}</span><span class="mchev">▶</span></div>
+        <div class="mynote-body" style="display:block">
+          <input class="mtitlein" placeholder="Question" value="${esc(n.q)}" />
+          <textarea class="mbodyin" placeholder="Answer…">${esc(n.a)}</textarea>
+          <div class="mynote-actions">
+            <button class="btn sm" data-act="cancel">Cancel</button>
+            <button class="btn primary sm" data-act="save">Save Q&amp;A</button>
+          </div>
+        </div>`;
+      el.querySelector('[data-act="save"]').addEventListener("click",()=>{
+        n.q=el.querySelector(".mtitlein").value.trim();
+        n.a=el.querySelector(".mbodyin").value;
+        n.updated=Date.now();
+        cicdQAEditing[n.id]=false;cicdQAOpen[n.id]=true;
+        persistCicdQA();renderCicdQA();toast("Q&A saved");
+      });
+      el.querySelector('[data-act="cancel"]').addEventListener("click",()=>{
+        if(!n.q&&!n.a){cicdQA=cicdQA.filter(x=>x.id!==n.id);}
+        cicdQAEditing[n.id]=false;
+        persistCicdQA();renderCicdQA();
+      });
+    }else{
+      el.innerHTML=`<div class="mynote-head">
+          <span class="mchev">▶</span>
+          <span class="mtitle" style="flex:1">${esc(qText)}</span>
+          <span class="mmeta">${fmtDate(n.updated)}</span>
+        </div>
+        <div class="mynote-body">
+          <pre>${esc(n.a)||'<span style="color:var(--muted-2);font-style:italic">no answer yet</span>'}</pre>
+          <div class="mynote-actions">
+            <button class="btn sm" data-act="edit">✎ edit</button>
+            <button class="btn sm" data-act="copy">⧉ copy</button>
+            <button class="linkbtn danger" data-act="del" style="margin-left:auto">delete</button>
+          </div>
+        </div>`;
+      el.querySelector(".mynote-head").addEventListener("click",(e)=>{
+        if(e.target.closest("[data-act]"))return;
+        cicdQAOpen[n.id]=!open;renderCicdQA();
+      });
+      el.querySelector('[data-act="edit"]').addEventListener("click",(e)=>{e.stopPropagation();cicdQAEditing[n.id]=true;cicdQAOpen[n.id]=true;renderCicdQA();});
+      el.querySelector('[data-act="copy"]').addEventListener("click",(e)=>{e.stopPropagation();copy(n.q+"\n\n"+n.a,e.target);});
+      el.querySelector('[data-act="del"]').addEventListener("click",(e)=>{
+        e.stopPropagation();
+        if(!confirm("Delete this Q&A? This can't be undone."))return;
+        cicdQA=cicdQA.filter(x=>x.id!==n.id);
+        persistCicdQA();renderCicdQA();toast("Q&A deleted");
+      });
+    }
+    return el;
+  }
+
+  let cicdSubView="scripts"; // which CI/CD inner tab (scripts vs qa) was last active
+  function renderCicdSub(){
+    $("#cicdScriptsView").style.display = cicdSubView==="scripts" ? "" : "none";
+    $("#cicdQAView").style.display = cicdSubView==="qa" ? "" : "none";
+    document.querySelectorAll("#cicdSubTabs .tab").forEach(b=>b.classList.toggle("on", b.dataset.cicdview===cicdSubView));
+    if(cicdSubView==="scripts") renderCicdScripts(); else renderCicdQA();
   }
 
   // ============ STATE ============
@@ -2364,27 +2569,30 @@
   function closeAll(){$("#pOverlay").classList.remove("show");$("#tOverlay").classList.remove("show");editingProblem=null;editingTopic=null;}
 
   // ============ EXPORT / IMPORT ============
-  // Bundles all three stores (drills, My Notes, per-command ref notes) into one file —
-  // a plain array export (the old format) still imports fine, just without notes/refEdits.
-  function exportBundle(){return {data:data, myNotes:myNotes, refEdits:refEdits, exportedAt:new Date().toISOString()};}
+  // Bundles all four stores (drills, My Notes, per-command ref notes, CI/CD Q&A) into one file —
+  // a plain array export (the old format) still imports fine, just without the other three.
+  function exportBundle(){return {data:data, myNotes:myNotes, refEdits:refEdits, cicdQA:cicdQA, exportedAt:new Date().toISOString()};}
   function exportJson(){const blob=new Blob([JSON.stringify(exportBundle(),null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="gke-vault-"+new Date().toISOString().slice(0,10)+".json";a.click();URL.revokeObjectURL(a.href);toast("Exported");}
   function importJson(file){const r=new FileReader();r.onload=()=>{
     try{
       const p=JSON.parse(r.result);
-      let newData,newNotes=null,newRefEdits=null;
+      let newData,newNotes=null,newRefEdits=null,newCicdQA=null;
       if(Array.isArray(p)){newData=p;}
       else if(p&&Array.isArray(p.data)){
         newData=p.data;
         if(Array.isArray(p.myNotes))newNotes=p.myNotes;
         if(p.refEdits&&typeof p.refEdits==="object")newRefEdits=p.refEdits;
+        if(Array.isArray(p.cicdQA))newCicdQA=p.cicdQA;
       }else throw 0;
       const parts=[newData.length+" topics"];
       if(newNotes)parts.push(newNotes.length+" My Notes entries");
       if(newRefEdits)parts.push(Object.keys(newRefEdits).length+" command notes");
+      if(newCicdQA)parts.push(newCicdQA.length+" CI/CD Q&A entries");
       if(!confirm("Import "+parts.join(", ")+"? Replaces current vault (export first)."))return;
       data=newData;activeTopic=data[0]?data[0].id:null;persist();
       if(newNotes){myNotes=newNotes;persistNotes();}
       if(newRefEdits){refEdits=newRefEdits;persistRefEdits();}
+      if(newCicdQA){cicdQA=mergeCicdQASeed(newCicdQA);persistCicdQA();}
       render();toast("Imported");
     }catch(e){toast("Not a valid vault JSON");}
   };r.readAsText(file);}
@@ -2412,12 +2620,17 @@
       $("#refView").style.display = v==="gke" ? "" : "none";
       $("#kubectlView").style.display = v==="kubectl" ? "" : "none";
       $("#terraformView").style.display = v==="terraform" ? "" : "none";
+      $("#cicdView").style.display = v==="cicd" ? "" : "none";
       $("#notesView").style.display = v==="notes" ? "" : "none";
       if(v==="gke") renderRef();
       if(v==="kubectl") renderKubectlRef();
       if(v==="terraform") renderTerraformRef();
+      if(v==="cicd") renderCicdSub();
       if(v==="notes") renderNotes();
     });
+  });
+  document.querySelectorAll("#cicdSubTabs .tab").forEach(b=>{
+    b.addEventListener("click",()=>{cicdSubView=b.dataset.cicdview;renderCicdSub();});
   });
 
   document.addEventListener("keydown",e=>{
@@ -2480,6 +2693,19 @@
           if(currentView==="gke") renderRef();
           else if(currentView==="kubectl") renderKubectlRef();
           else if(currentView==="terraform") renderTerraformRef();
+          else if(currentView==="cicd"&&cicdSubView==="scripts") renderCicdScripts();
+        }
+      }catch(e){}
+    });
+    db.ref("vault/cicdQAJson").on("value",snap=>{
+      const raw=snap.val();
+      if(raw===null)return;
+      try{
+        const v=JSON.parse(raw);
+        if(Array.isArray(v)){
+          cicdQA=mergeCicdQASeed(v);
+          try{localStorage.setItem(CICDQA_LS_KEY,JSON.stringify(cicdQA));}catch(e){}
+          if(currentView==="cicd"&&cicdSubView==="qa") renderCicdQA();
         }
       }catch(e){}
     });
