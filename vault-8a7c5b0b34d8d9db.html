@@ -294,6 +294,7 @@
     <button class="vtab on" data-view="drills">🩺 Troubleshooting Drills</button>
     <button class="vtab" data-view="gke">☁️ GKE Commands</button>
     <button class="vtab" data-view="kubectl">⚙️ kubectl Commands</button>
+    <button class="vtab" data-view="helm">⎈ Helm</button>
     <button class="vtab" data-view="terraform">🏗️ Terraform Commands</button>
     <button class="vtab" data-view="cicd">🔁 CI/CD</button>
     <button class="vtab" data-view="pipes">🏭 Pipelines</button>
@@ -321,6 +322,7 @@
   <div id="refView" style="display:none"></div>
 
   <div id="kubectlView" style="display:none"></div>
+  <div id="helmView" style="display:none"></div>
 
   <div id="terraformView" style="display:none"></div>
 
@@ -2207,6 +2209,406 @@
   }
 ];
 
+  // ============ HELM COMMANDS (ordered course: start to end, every entry has a scenario; all commands were run on a real cluster) ============
+  // Same schema as the other reference tabs: {cat, commands:[{desc, cmd, parts}]}. Notes are keyed "helm::"+cmd in the shared refEdits store.
+  const HELM_REF_DATA=[
+  {
+    "cat": "1. Start here: what Helm is and your first commands",
+    "commands": [
+      {
+        "desc": " Check that Helm 3 is installed (confirm the version before anything else)",
+        "cmd": "helm version --short",
+        "parts": "<b>SCENARIO:</b><br> It is your first day on a new team, or you are setting up a CI runner. Before you deploy anything you want to know which Helm you have. Interviewers still ask \"Helm 2 or Helm 3?\", so know the answer.<br><br><b>WHAT IT DOES:</b><br>• Prints the version of the Helm program on your machine (the \"client\").<br>• Helm 3 is a single program. Helm 2 had a second part inside the cluster called Tiller, which was removed because it needed too much power.<br><br><b>WATCH OUT:</b><br>• Helm talks to the cluster using the same login file as kubectl. There is no separate Helm login.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Helm 3 has no Tiller. It talks to the Kubernetes API directly with my kubeconfig permissions, and stores each release as a Secret in the release namespace.\""
+      },
+      {
+        "desc": " See where Helm keeps its files and which cluster and namespace it will use",
+        "cmd": "helm env | grep -E 'HELM_(CACHE_HOME|CONFIG_HOME|NAMESPACE)'",
+        "parts": "<b>SCENARIO:</b><br> A teammate says \"my chart repo disappeared\" or \"Helm is using old data\". You need to know where Helm stores things on this machine.<br><br><b>WHAT IT DOES:</b><br>• <b>HELM_CONFIG_HOME</b> holds your list of chart repositories.<br>• <b>HELM_CACHE_HOME</b> holds downloaded charts and repo indexes. Deleting it is safe, Helm downloads again.<br>• <b>HELM_NAMESPACE</b> is the default namespace when you do not pass <b>-n</b>.<br><br><b>WATCH OUT:</b><br>• On a CI runner, each job usually starts with an empty cache. That is why pipelines run <b>helm repo add</b> and <b>helm repo update</b> every time.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Helm's state lives in three places: config, cache, and the release Secrets in the cluster. Only the last one matters to a running app.\""
+      },
+      {
+        "desc": " Read the built-in help (every command explains itself)",
+        "cmd": "helm --help | head -30\nhelm install --help | head -20",
+        "parts": "<b>SCENARIO:</b><br> In an interview or an incident you forget a flag. Helm's own help is the fastest source and it never goes out of date for the version you have installed.<br><br><b>WHAT IT DOES:</b><br>• <b>helm --help</b> lists all commands, grouped by purpose.<br>• <b>helm COMMAND --help</b> explains one command and lists its flags.<br><br><b>WATCH OUT:</b><br>• Flags change between versions. Example: <b>--dry-run=server</b> exists only in newer Helm 3 versions. Check the help for the version you actually run.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"I do not memorise flags, I check <b>helm COMMAND --help</b> for the installed version.\""
+      },
+      {
+        "desc": " Helm deploys wherever kubectl points: check the cluster before you run anything",
+        "cmd": "kubectl config current-context\nhelm list -A",
+        "parts": "<b>SCENARIO:</b><br> You think you are on the practice cluster but your kubectl is still pointing at production from yesterday. A <b>helm upgrade</b> now would hit production. Always check first.<br><br><b>WHAT IT DOES:</b><br>• <b>kubectl config current-context</b> prints which cluster your commands will go to. Helm uses the same one.<br>• <b>helm list -A</b> lists the releases in all namespaces of that cluster. If you see names you do not recognise, stop.<br><br><b>WATCH OUT:</b><br>• Pass <b>--kube-context NAME</b> to Helm to pick a cluster for one command only, and <b>--kubeconfig FILE</b> to use a different login file. In scripts, always pass <b>--kube-context</b> explicitly.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"The most common Helm outage is the right command run against the wrong cluster, so my pipelines pin the context explicitly.\""
+      }
+    ]
+  },
+  {
+    "cat": "2. Repositories: finding and inspecting charts",
+    "commands": [
+      {
+        "desc": " Add a chart repository (a shop where charts are published)",
+        "cmd": "helm repo add podinfo https://stefanprodan.github.io/podinfo\nhelm repo list",
+        "parts": "<b>SCENARIO:</b><br> You need a small test app to practise on. A chart repository is like an app store, so first you tell Helm where the shop is. Here we use a tiny demo app called podinfo.<br><br><b>WHAT IT DOES:</b><br>• <b>helm repo add NAME URL</b> saves the shop address under a short name.<br>• <b>helm repo list</b> shows every shop you have added.<br><br><b>WATCH OUT:</b><br>• Only add repositories you trust. A chart can create anything in your cluster, so a charts repo is as sensitive as running someone else's script.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"A Helm repo is just a web server with an index.yaml and chart archives. Adding it only saves the address.\""
+      },
+      {
+        "desc": " Refresh the list of charts (like apt update)",
+        "cmd": "helm repo update",
+        "parts": "<b>SCENARIO:</b><br> A teammate says a new chart version is out, but you cannot see it. Your local copy of the shop's catalogue is old.<br><br><b>WHAT IT DOES:</b><br>• Downloads the latest catalogue from every repository you added.<br><br><b>WATCH OUT:</b><br>• Run it at the start of every pipeline job. Otherwise Helm may install an older version of a chart than the one you expect.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Repo update refreshes the local index, nothing is installed or changed in the cluster.\""
+      },
+      {
+        "desc": " Search for a chart and see which versions exist",
+        "cmd": "helm search repo podinfo\nhelm search repo podinfo --versions | head -5",
+        "parts": "<b>SCENARIO:</b><br> You need to know which version of a chart is the latest, and which exact version you should pin in production.<br><br><b>WHAT IT DOES:</b><br>• <b>CHART VERSION</b> is the version of the packaging. <b>APP VERSION</b> is the version of the app inside it. They are different numbers.<br>• <b>--versions</b> lists older versions too, so you can pin one.<br><br><b>WATCH OUT:</b><br>• Always pin a chart version in pipelines (<b>--version 6.5.0</b>). If you do not, a deploy next month may use a newer chart than you tested.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Chart version and app version are separate. I pin the chart version so deployments are repeatable.\""
+      },
+      {
+        "desc": " Search the public Artifact Hub for charts (all repositories on the internet)",
+        "cmd": "helm search hub nginx --max-col-width 60 | head -6",
+        "parts": "<b>SCENARIO:</b><br> You are asked to deploy something you have never used, such as a database or an ingress controller. Artifact Hub is where you check whether a ready-made chart exists.<br><br><b>WHAT IT DOES:</b><br>• <b>search repo</b> looks only in repos you added. <b>search hub</b> looks at the public catalogue.<br><br><b>WATCH OUT:</b><br>• Hub results are not vetted for you. Check who publishes the chart, how recently it was updated and how many people use it before you trust it.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"I search the hub to find a chart, but I review the chart source and pin its version before it goes anywhere near production.\""
+      },
+      {
+        "desc": " Read a chart's description before installing it",
+        "cmd": "helm show chart podinfo/podinfo",
+        "parts": "<b>SCENARIO:</b><br> Someone asks you to install a chart. Before you do, you read what it says about itself: name, versions, home page and the Kubernetes versions it supports.<br><br><b>WHAT IT DOES:</b><br>• Prints <b>Chart.yaml</b>, the chart's identity card.<br><br><b>WATCH OUT:</b><br>• <b>kubeVersion</b> tells you which Kubernetes versions the chart supports. A mismatch is a common reason an install fails.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"I read Chart.yaml and the README first. The chart is code that runs with my permissions.\""
+      },
+      {
+        "desc": " See every setting a chart lets you change (the knobs)",
+        "cmd": "helm show values podinfo/podinfo | head -40",
+        "parts": "<b>SCENARIO:</b><br> The app owner says \"use two copies and a custom message\". Where do you find the names of those settings? In the chart's default values file.<br><br><b>WHAT IT DOES:</b><br>• Prints <b>values.yaml</b>. Every setting you can change with <b>--set</b> or <b>-f</b> is in this file with its default.<br><br><b>WATCH OUT:</b><br>• Read it top to bottom once. It shows image, replicas, resources, ingress and probes, which is also a good checklist for an interview.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"values.yaml is the chart's public interface. If a setting is not there, I cannot change it without editing the chart.\""
+      },
+      {
+        "desc": " Download a chart and look inside it before you trust it",
+        "cmd": "helm pull podinfo/podinfo --untar --untardir ./pulled\nfind ./pulled/podinfo -type f | sort | head -20",
+        "parts": "<b>SCENARIO:</b><br> Security asks \"what exactly will this chart create in our cluster?\" You download it as a folder and read the templates. This is also the best way to learn how charts are built.<br><br><b>WHAT IT DOES:</b><br>• <b>helm pull --untar</b> downloads the chart and unpacks it into a normal folder you can open.<br>• You will see <b>Chart.yaml</b>, <b>values.yaml</b> and a <b>templates/</b> folder. These three are the whole chart.<br><br><b>WATCH OUT:</b><br>• Reading the <b>templates/</b> folder is how you find out which Deployments, Services and permissions (RBAC) the chart will really create.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"I pull and read the templates when I use a chart from outside the company. Rendering with <b>helm template</b> shows the final YAML.\""
+      }
+    ]
+  },
+  {
+    "cat": "3. Install a release and inspect it",
+    "commands": [
+      {
+        "desc": " Install your first release (chart + settings = release)",
+        "cmd": "helm install demo podinfo/podinfo -n helm-lab --create-namespace --set replicaCount=2\nkubectl -n helm-lab rollout status deploy/demo-podinfo --timeout=180s",
+        "parts": "<b>SCENARIO:</b><br> The app owner asks you to put the demo app in the cluster with two copies. You pick a name for the installation (a release), choose a namespace, and set the number of copies.<br><br><b>WHAT IT DOES:</b><br>• A chart is the recipe. A release is one cooked instance of it, with a name. <b>demo</b> is the release name.<br>• <b>-n helm-lab --create-namespace</b> puts it in its own namespace and creates it if it does not exist.<br>• <b>--set replicaCount=2</b> overrides one default value.<br><br><b>WATCH OUT:</b><br>• The same chart can be installed many times under different release names, for example one per team or environment.<br>• Without <b>--wait</b> Helm returns as soon as it has SENT the objects. The kubectl line waits for the pods to be ready.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Chart is the template, release is an installed instance. I can install the same chart several times under different names.\""
+      },
+      {
+        "desc": " List the releases in a namespace and see their state",
+        "cmd": "helm list -n helm-lab",
+        "parts": "<b>SCENARIO:</b><br> A teammate asks \"what is deployed in helm-lab right now, and is it healthy?\" This is the first command you run during any incident.<br><br><b>WHAT IT DOES:</b><br>• Shows each release's name, revision number, last updated time, status, chart and app version.<br>• <b>REVISION</b> goes up by one every time the release changes (upgrade or rollback).<br><br><b>WATCH OUT:</b><br>• <b>helm list</b> shows one namespace only (the default one if you omit <b>-n</b>). Add <b>-A</b> for all namespaces.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"helm list is my inventory. Status <b>deployed</b> is good, <b>failed</b> or <b>pending-upgrade</b> needs attention.\""
+      },
+      {
+        "desc": " Show the status of one release and the notes the chart prints",
+        "cmd": "helm status demo -n helm-lab",
+        "parts": "<b>SCENARIO:</b><br> You installed an app yesterday and forgot how to reach it. The chart prints usage instructions (such as a port-forward command) and <b>helm status</b> shows them again.<br><br><b>WHAT IT DOES:</b><br>• Prints the status, the revision and the chart's NOTES (the text after an install).<br><br><b>WATCH OUT:</b><br>• NOTES usually contain the exact commands to connect to the app. Read them before asking someone.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"helm status is my quick check of one release, plus the chart author's own usage notes.\""
+      },
+      {
+        "desc": " See exactly which Kubernetes objects Helm created",
+        "cmd": "kubectl -n helm-lab get all -l app.kubernetes.io/name=demo-podinfo",
+        "parts": "<b>SCENARIO:</b><br> A release is one name, but behind it there may be a Deployment, a Service, pods and more. During an incident you want to see the real objects Helm made.<br><br><b>WHAT IT DOES:</b><br>• Charts put labels on everything they create. This chart uses <b>app.kubernetes.io/name=demo-podinfo</b> (the release name plus the chart name) and also <b>app.kubernetes.io/managed-by=Helm</b>.<br>• A label selector (<b>-l</b>) then finds all the objects of the release in one command.<br><br><b>WATCH OUT:</b><br>• The exact label names are a chart convention, not something Helm forces. This demo chart uses <b>name</b>, while charts made with <b>helm create</b> use <b>app.kubernetes.io/instance</b>. Check with <b>helm get manifest</b> if a selector returns nothing.<br>• Never delete these objects by hand. Use <b>helm uninstall</b>, or Helm and the cluster will disagree about what exists.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Helm manages groups of ordinary Kubernetes objects. kubectl and Helm look at the same objects from two angles.\""
+      },
+      {
+        "desc": " Show the settings you gave this release (user-supplied values)",
+        "cmd": "helm get values demo -n helm-lab",
+        "parts": "<b>SCENARIO:</b><br> Someone asks \"what did we change from the defaults on this release?\" You do not want to guess. Helm remembers.<br><br><b>WHAT IT DOES:</b><br>• Prints only the values YOU supplied (here <b>replicaCount: 2</b>), not the chart's defaults.<br><br><b>WATCH OUT:</b><br>• Anything you typed with <b>--set</b> is stored in the cluster and shown here. Do not pass secrets this way. See the production chapter.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"helm get values gives me the exact overrides of a release, which makes it auditable.\""
+      },
+      {
+        "desc": " See the final YAML that Helm sent to the cluster",
+        "cmd": "helm get manifest demo -n helm-lab | head -40",
+        "parts": "<b>SCENARIO:</b><br> The pods behave strangely and you want to know exactly what Helm applied: which image tag, which environment variables, which probes. The rendered manifest is the truth.<br><br><b>WHAT IT DOES:</b><br>• Prints every Kubernetes object of the current revision as YAML, after all templating.<br>• <b>helm get all</b> prints values, manifest, hooks and notes together.<br><br><b>WATCH OUT:</b><br>• This is what Helm applied, not necessarily what is live now. Someone may have changed things with kubectl since. Compare them in the production chapter.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"helm get manifest is the rendered YAML of the last revision. I compare it to the live objects to find drift.\""
+      },
+      {
+        "desc": " Print releases as JSON for scripts (and check them with jq)",
+        "cmd": "helm list -A\nhelm list -n helm-lab -o json | jq -r '.[] | .name + \" \" + .status'",
+        "parts": "<b>SCENARIO:</b><br> A script must fail the pipeline if any release in a namespace is not <b>deployed</b>. Reading the table text is fragile, so you ask for JSON.<br><br><b>WHAT IT DOES:</b><br>• <b>-o json</b> (or <b>-o yaml</b>) gives machine-readable output. <b>jq</b> picks the fields.<br><br><b>WATCH OUT:</b><br>• Do not parse the default table with <b>awk</b> in a script. Its columns can change between versions.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"For scripting I use <b>-o json</b> and jq, never the human table.\""
+      },
+      {
+        "desc": " Let Helm invent the release name (quick throwaway installs)",
+        "cmd": "helm install podinfo/podinfo -n helm-lab --generate-name --set replicaCount=1\nhelm list -n helm-lab -q",
+        "parts": "<b>SCENARIO:</b><br> You want a quick test copy of the app and do not care what it is called. <b>--generate-name</b> picks a name like <b>podinfo-1712345678</b>.<br><br><b>WHAT IT DOES:</b><br>• Creates a release with a generated name. <b>-q</b> prints only the names.<br><br><b>WATCH OUT:</b><br>• Generated names are fine for experiments and bad for production. A pipeline needs a fixed name so that the next run upgrades the same release.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Fixed release names in pipelines so <b>upgrade --install</b> always targets the same release.\""
+      },
+      {
+        "desc": " Remove a release (and every object it created)",
+        "cmd": "helm uninstall $(helm list -n helm-lab -q --filter '^podinfo-') -n helm-lab\nhelm list -n helm-lab -q",
+        "parts": "<b>SCENARIO:</b><br> The throwaway test copy is no longer needed. One command removes the Deployment, Service and everything else the release created.<br><br><b>WHAT IT DOES:</b><br>• <b>helm uninstall NAME</b> deletes all objects of that release.<br>• <b>--filter</b> is a pattern, so <b>$(...)</b> here finds the generated name for you.<br><br><b>WATCH OUT:</b><br>• PersistentVolumeClaims created by some charts are kept on purpose. Check them separately, or the storage cost stays.<br>• By default the release history is deleted too. See <b>--keep-history</b> in the production chapter.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Uninstall removes what Helm created. Data volumes may survive, so I check before assuming it is clean.\""
+      }
+    ]
+  },
+  {
+    "cat": "4. Values: changing a chart without editing it",
+    "commands": [
+      {
+        "desc": " Save the chart's default values to a file and use it as your starting point",
+        "cmd": "helm show values podinfo/podinfo > base-values.yaml\ngrep -n 'replicaCount' base-values.yaml",
+        "parts": "<b>SCENARIO:</b><br> The team wants its own settings file in Git. You start from the chart's defaults and keep only what you change.<br><br><b>WHAT IT DOES:</b><br>• Saves every default into a file you can read and edit.<br><br><b>WATCH OUT:</b><br>• Do not commit the whole file. Keep ONLY the values you change. A short values file shows at a glance what is special about your deployment, and it picks up better defaults when the chart improves.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"My values file contains only differences from the chart's defaults.\""
+      },
+      {
+        "desc": " Preview the effect of a setting without touching the cluster (helm template)",
+        "cmd": "helm template demo podinfo/podinfo --set replicaCount=3 | grep -n 'replicas:'",
+        "parts": "<b>SCENARIO:</b><br> The app owner asks \"if we set replicaCount to 3, what changes?\" You can answer without installing anything. <b>helm template</b> renders the chart on your laptop and prints the YAML.<br><br><b>WHAT IT DOES:</b><br>• <b>helm template</b> fills the templates with your values and prints the result. It never contacts the cluster.<br>• <b>--set key=value</b> overrides one value for this command.<br><br><b>WATCH OUT:</b><br>• It is the safest way to learn Helm: change a value, render, and compare the output.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"helm template is my fast feedback loop: render locally, inspect, then deploy.\""
+      },
+      {
+        "desc": " Set a nested value (dots go one level deeper)",
+        "cmd": "helm template demo podinfo/podinfo --set ui.message=\"Hello from Helm\" | grep -n -B1 -A1 'Hello from Helm'",
+        "parts": "<b>SCENARIO:</b><br> The product owner wants the demo page to show a greeting. In values.yaml the message sits under <b>ui:</b>, so you write <b>ui.message</b>.<br><br><b>WHAT IT DOES:</b><br>• A dot means \"one level deeper\": <b>ui.message</b> is <b>ui:</b> then <b>message:</b>.<br><br><b>WATCH OUT:</b><br>• Quote values with spaces. Spelling mistakes in a key are NOT an error: Helm silently ignores a setting the chart does not know. Always check the rendered YAML.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"A mistyped key is silently ignored, so I always verify the result with helm template or helm get values.\""
+      },
+      {
+        "desc": " Why --set is painful for lists, and why a values file is better",
+        "cmd": "helm template demo podinfo/podinfo --set ingress.enabled=true --set 'ingress.hosts[0].host=demo.example.com' | sed -n '/kind: Ingress/,/^---/p' | tail -8",
+        "parts": "<b>SCENARIO:</b><br> You want an Ingress for <b>demo.example.com</b>. <b>--set</b> can set a list item with <b>[0]</b>, but the whole item is replaced, so the other keys of that item (such as the paths) are lost and the Ingress is broken.<br><br><b>WHAT IT DOES:</b><br>• Square brackets set a list item: <b>hosts[0].host</b>.<br>• A list is replaced as a whole, not merged item by item.<br><br><b>WHAT YOU SEE:</b><br><span style=\"font-family:var(--mono);font-size:12px;white-space:pre-wrap\">spec:\n  ingressClassName:\n  rules:\n    - host: \"demo.example.com\"\n      http:\n        paths:</span><br><br><b>WATCH OUT:</b><br>• Look at the output: <b>paths:</b> is empty. The chart's default path was thrown away because we replaced the list item.<br>• Anything with lists or several fields belongs in a values file (next entries), not in a long chain of <b>--set</b> flags.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Lists replace instead of merge, so I put list-shaped config in a values file.\""
+      },
+      {
+        "desc": " --set vs --set-string (when a value must stay text)",
+        "cmd": "helm template demo podinfo/podinfo --set nodeSelector.ssd=true | grep -A1 'nodeSelector:'\nhelm template demo podinfo/podinfo --set-string nodeSelector.ssd=true | grep -A1 'nodeSelector:'\nhelm template demo podinfo/podinfo --set nodeSelector.ssd=true | kubectl -n helm-lab apply --dry-run=server -f -",
+        "parts": "<b>SCENARIO:</b><br> A pipeline passes <b>true</b> or <b>1234</b> as the value of a node label or an annotation. Helm turns it into a boolean or a number, and Kubernetes only accepts text there. The deploy then fails with a confusing message.<br><br><b>WHAT IT DOES:</b><br>• <b>--set</b> guesses the type. <b>true</b>, <b>false</b>, <b>null</b> and whole numbers such as <b>1234</b> are NOT text. Anything else stays text (so <b>1.10</b> or <b>0123</b> are fine).<br>• <b>--set-string</b> always keeps the value as text, which you can see because it is quoted in the output.<br><br><b>WHAT YOU SEE:</b><br><span style=\"font-family:var(--mono);font-size:12px;white-space:pre-wrap\">nodeSelector:\n  ssd: true          &lt;- with --set, a boolean\nnodeSelector:\n  ssd: \"true\"        &lt;- with --set-string, text\nError from server (BadRequest): ... cannot unmarshal bool into Go struct field PodSpec.spec.template.spec.nodeSelector of type string</span><br><br><b>WATCH OUT:</b><br>• The third command is SUPPOSED to fail. It proves that Kubernetes rejects the boolean form (the namespace must already exist, so run it after you installed the demo release).<br>• Use <b>--set-string</b> for labels, annotations, node selectors and any value that must stay text.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"I use --set-string for anything that must stay text. --set silently turns true and 1234 into non-strings.\""
+      },
+      {
+        "desc": " Put your settings in a values file (the normal way to work)",
+        "cmd": "cat > my-values.yaml <<'EOF'\nreplicaCount: 2\nui:\n  message: \"Hello from my-values.yaml\"\nresources:\n  requests:\n    cpu: 10m\n    memory: 16Mi\nEOF\nhelm template demo podinfo/podinfo -f my-values.yaml | grep -n -E 'replicas:|Hello from'",
+        "parts": "<b>SCENARIO:</b><br> The settings for this app are growing: replicas, message, resources. You keep them in a file that goes into Git, so everybody deploys the same thing.<br><br><b>WHAT IT DOES:</b><br>• <b>-f FILE</b> (or <b>--values FILE</b>) loads a values file. Only the keys in your file change. Everything else keeps the chart's defaults.<br><br><b>WATCH OUT:</b><br>• Keep one values file per environment: <b>values-dev.yaml</b>, <b>values-prod.yaml</b>. The next entry shows how they combine.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Environment differences live in values files in Git, and the chart stays the same everywhere.\""
+      },
+      {
+        "desc": " Combine several values files, and know which one wins",
+        "cmd": "cat > prod-values.yaml <<'EOF'\nreplicaCount: 5\nEOF\nhelm template demo podinfo/podinfo -f my-values.yaml -f prod-values.yaml | grep 'replicas:'\nhelm template demo podinfo/podinfo -f my-values.yaml -f prod-values.yaml --set replicaCount=7 | grep 'replicas:'",
+        "parts": "<b>SCENARIO:</b><br> Production uses the base settings plus a few overrides of its own. You pass two files, and the question in every interview is which one wins.<br><br><b>WHAT IT DOES:</b><br>• The order is: chart defaults, then each <b>-f</b> file from left to right, then <b>--set</b>. The LAST one wins.<br>• So the first command gives 5 (prod file beats the base file) and the second gives 7 (<b>--set</b> beats every file).<br><br><b>WATCH OUT:</b><br>• Merging works key by key for maps, but lists are replaced as a whole.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Precedence is defaults, then values files in order, then --set. The last one wins.\""
+      },
+      {
+        "desc": " Show every value that is really in effect (defaults plus your overrides)",
+        "cmd": "helm get values demo -n helm-lab --all | head -20",
+        "parts": "<b>SCENARIO:</b><br> A pod is using a setting nobody remembers changing. <b>--all</b> shows the final value of EVERY setting, not only your overrides.<br><br><b>WHAT IT DOES:</b><br>• Without <b>--all</b> you see only your overrides. With <b>--all</b> you see the merged result.<br><br><b>WATCH OUT:</b><br>• To see what changed compared with the defaults, compare this with the plain <b>helm get values</b>.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"get values shows my overrides, get values --all shows what is really in effect.\""
+      }
+    ]
+  },
+  {
+    "cat": "5. Upgrade, history, rollback and safe deploys",
+    "commands": [
+      {
+        "desc": " Upgrade a release (and meet the classic surprise)",
+        "cmd": "helm upgrade demo podinfo/podinfo -n helm-lab --set ui.message=\"Version 2\"\nkubectl -n helm-lab rollout status deploy/demo-podinfo --timeout=180s",
+        "parts": "<b>SCENARIO:</b><br> The product owner wants the new greeting live. You run an upgrade with only the new message. A minute later someone asks why the app is down to ONE pod.<br><br><b>WHAT IT DOES:</b><br>• <b>helm upgrade RELEASE CHART</b> makes a new revision with the values you give now.<br><br><b>WATCH OUT:</b><br>• The surprise: values you do NOT repeat go back to the chart default. Your earlier <b>replicaCount=2</b> is gone. See the next entry.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"On upgrade Helm does not remember old --set values unless I ask it to, which is why I use values files.\""
+      },
+      {
+        "desc": " Find out why the replica count dropped",
+        "cmd": "helm get values demo -n helm-lab\nkubectl -n helm-lab get deploy demo-podinfo -o jsonpath='{.spec.replicas}'; echo",
+        "parts": "<b>SCENARIO:</b><br> The app went from 2 pods to 1 after the upgrade. You check what values the new revision really has.<br><br><b>WHAT IT DOES:</b><br>• <b>get values</b> now shows only <b>ui.message</b>. <b>replicaCount</b> is missing, so the chart default (1) applied.<br><br><b>WATCH OUT:</b><br>• This is the number one Helm upgrade mistake. The fix is next.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Upgrade replaces the user-supplied values with whatever I pass, so I always pass the full set from a file.\""
+      },
+      {
+        "desc": " Fix it for good: upgrade --install with a values file",
+        "cmd": "helm upgrade --install demo podinfo/podinfo -n helm-lab -f my-values.yaml\nkubectl -n helm-lab rollout status deploy/demo-podinfo --timeout=180s\nkubectl -n helm-lab get deploy demo-podinfo -o jsonpath='{.spec.replicas}'; echo",
+        "parts": "<b>SCENARIO:</b><br> You want the same command to work the first time (install) and every time after (upgrade), with all settings in a file, so the result never depends on history.<br><br><b>WHAT IT DOES:</b><br>• <b>upgrade --install</b> installs if the release does not exist yet, and upgrades it if it does.<br>• All the settings come from the file, so the replicas return to 2.<br><br><b>WATCH OUT:</b><br>• <b>--reuse-values</b> is the other fix: it reuses the last release's values and merges your new <b>--set</b> on top. It does not pick up new chart defaults, so it can hide changes. Prefer a values file.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"My pipelines run <b>helm upgrade --install</b> with a values file. One command, repeatable, no hidden state.\""
+      },
+      {
+        "desc": " See the history of a release (every change is a numbered revision)",
+        "cmd": "helm history demo -n helm-lab",
+        "parts": "<b>SCENARIO:</b><br> Something broke after a deploy and the on-call asks \"what changed and when?\" The history lists every revision with its status.<br><br><b>WHAT IT DOES:</b><br>• Each install, upgrade or rollback adds a revision, with the date, status, chart version and a short note.<br><br><b>WATCH OUT:</b><br>• Helm keeps only 10 revisions by default. Set <b>--history-max</b> in pipelines if you want a different number.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"helm history is my change log for a release, and each revision is a rollback target.\""
+      },
+      {
+        "desc": " Roll back to a previous revision",
+        "cmd": "helm rollback demo 1 -n helm-lab\nhelm history demo -n helm-lab | tail -3",
+        "parts": "<b>SCENARIO:</b><br> The new version has a bug. You want revision 1 back right now, without a new build.<br><br><b>WHAT IT DOES:</b><br>• <b>helm rollback RELEASE REVISION</b> re-applies that old revision as a NEW revision. History moves forward, it does not rewind.<br><br><b>WATCH OUT:</b><br>• Rollback restores Kubernetes objects only. It does not undo a database change made by the new version.<br>• Rollback with no revision number goes back one revision.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Rollback creates a new revision with the old contents. It is fast and I can roll forward again.\""
+      },
+      {
+        "desc": " Deploy safely: wait for ready, and undo automatically on failure",
+        "cmd": "helm upgrade --install demo podinfo/podinfo -n helm-lab -f my-values.yaml --atomic --wait --timeout 3m",
+        "parts": "<b>SCENARIO:</b><br> Last week an upgrade reported \"success\" while the pods were crash-looping, because Helm only checked that the objects were created. You now want green to mean healthy.<br><br><b>WHAT IT DOES:</b><br>• <b>--wait</b> makes Helm wait until the pods are Ready (up to <b>--timeout</b>).<br>• <b>--atomic</b> means all-or-nothing: if the upgrade fails or times out, Helm rolls back by itself. It also turns on <b>--wait</b>.<br><br><b>WATCH OUT:</b><br>• The timeout must be longer than your slowest healthy start, or good deploys get rolled back.<br>• A pod that starts but gives wrong answers still passes. Add a smoke test after the deploy.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"I always deploy with --atomic --wait --timeout so the pipeline result tells the truth.\""
+      },
+      {
+        "desc": " See an atomic deploy fail and undo itself (practise on purpose)",
+        "cmd": "helm upgrade demo podinfo/podinfo -n helm-lab -f my-values.yaml --set image.tag=does-not-exist --atomic --wait --timeout 60s\nhelm history demo -n helm-lab | tail -3\nkubectl -n helm-lab get pods -l app.kubernetes.io/name=demo-podinfo",
+        "parts": "<b>SCENARIO:</b><br> A developer pushed an image tag that does not exist. You want to see that the pipeline fails, the old pods stay up, and Helm puts the old release back without you doing anything.<br><br><b>WHAT IT DOES:</b><br>• The new pods cannot pull the image (<b>ErrImagePull</b>), so after 60 seconds Helm gives up and the command exits with an error.<br>• History shows the failed attempt, and then a rollback that makes the old release current again.<br>• The old pods kept serving the whole time, so users saw nothing.<br><br><b>WHAT YOU SEE:</b><br><span style=\"font-family:var(--mono);font-size:12px;white-space:pre-wrap\">Error: UPGRADE FAILED: release demo failed, and has been rolled back due to atomic being set: context deadline exceeded\n5   superseded   Upgrade complete\n6   failed       Upgrade \"demo\" failed: context deadline exceeded\n7   deployed     Rollback to 5</span><br><br><b>WATCH OUT:</b><br>• The first command is SUPPOSED to fail (a non-zero exit code is what makes the pipeline red).<br>• This worked because the release has TWO replicas. The next entry shows a trap with ONE.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"With atomic the bad release never takes over. The old pods keep serving and Helm rolls back by itself.\""
+      },
+      {
+        "desc": " A trap: with ONE replica, --wait can say \"success\" while the new pod is broken",
+        "cmd": "helm upgrade demo podinfo/podinfo -n helm-lab -f my-values.yaml --set replicaCount=1 --set image.tag=does-not-exist --atomic --wait --timeout 60s\nkubectl -n helm-lab get pods -l app.kubernetes.io/name=demo-podinfo\nhelm upgrade demo podinfo/podinfo -n helm-lab -f my-values.yaml --atomic --wait --timeout 3m",
+        "parts": "<b>SCENARIO:</b><br> The same bad image tag, but this time the app has a single replica. A teammate says \"atomic protects us\". You run it on purpose and find out that it does not.<br><br><b>WHAT IT DOES:</b><br>• The first command finishes in about 5 seconds with <b>STATUS: deployed</b>, even though the image does not exist.<br>• The second command shows why: the old pod is already gone and the new one is stuck in <b>ErrImagePull</b> or <b>ContainerCreating</b>. The app is DOWN while the pipeline is green.<br>• The third command repairs it.<br><br><b>WHAT YOU SEE:</b><br><span style=\"font-family:var(--mono);font-size:12px;white-space:pre-wrap\">Release \"demo\" has been upgraded. Happy Helming!\nSTATUS: deployed                      &lt;- green, in about 5 seconds\ndemo-podinfo-64bb475795-6pnmp   1/1   Terminating\ndemo-podinfo-64bb475795-nr266   1/1   Terminating\ndemo-podinfo-66c94bf596-4cfs6   0/1   ContainerCreating     &lt;- the only new pod, not ready (the image does not exist)</span><br><br><b>WATCH OUT:</b><br>• Why it happens: <b>--wait</b> trusts the Deployment's own rolling-update rules. This chart allows <b>maxUnavailable: 1</b>, so with one replica \"zero pods ready\" is acceptable. With two replicas the old pod keeps counting, and the same test failed correctly in the previous entry.<br>• Check the strategy of every chart before you trust <b>--wait</b>: <b>helm template ... | grep -A5 strategy:</b>. For a single replica use <b>maxUnavailable: 0</b>, and keep two or more replicas in production.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"--wait is only as strict as the Deployment's rolling-update strategy. With one replica and maxUnavailable 1 it can pass while the app is down, so I check the strategy and run two or more replicas.\""
+      },
+      {
+        "desc": " Rehearse an upgrade without applying it (dry run on the server)",
+        "cmd": "helm upgrade --install demo podinfo/podinfo -n helm-lab -f my-values.yaml --set replicaCount=4 --dry-run=server | head -25\nkubectl -n helm-lab get deploy demo-podinfo -o jsonpath='{.spec.replicas}'; echo",
+        "parts": "<b>SCENARIO:</b><br> Before a risky production change you want Kubernetes itself to say \"yes, I would accept this\", not only your laptop.<br><br><b>WHAT IT DOES:</b><br>• <b>--dry-run=server</b> sends the objects to the cluster for validation but saves nothing. <b>--dry-run=client</b> only renders locally.<br>• The second command proves that nothing changed: the Deployment still has 2 replicas, not 4.<br><br><b>WATCH OUT:</b><br>• The output looks like a real upgrade: it says \"has been upgraded\" and <b>STATUS: pending-upgrade</b>. Do not be fooled. Nothing was applied, and the release did not change.<br>• Server mode catches things that rendering cannot: a missing namespace, a rejected field, an admission policy.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Client dry run checks the template, server dry run asks the cluster. Neither changes anything.\""
+      },
+      {
+        "desc": " Check the rendered YAML with kubectl, as a pipeline step",
+        "cmd": "helm template demo podinfo/podinfo -n helm-lab -f my-values.yaml | kubectl -n helm-lab apply --dry-run=server -f -",
+        "parts": "<b>SCENARIO:</b><br> In CI you want to reject bad YAML on the merge request, before anyone runs a real deploy.<br><br><b>WHAT IT DOES:</b><br>• Helm renders the YAML, and kubectl asks the cluster to validate it (nothing is saved).<br><br><b>WHAT YOU SEE:</b><br><span style=\"font-family:var(--mono);font-size:12px;white-space:pre-wrap\">Warning: resource deployments/demo-podinfo is missing the kubectl.kubernetes.io/last-applied-configuration annotation ...\ndeployment.apps/demo-podinfo configured (server dry run)\npod/demo-podinfo-grpc-test-xxxxx created (server dry run)</span><br><br><b>WATCH OUT:</b><br>• The warnings are normal. The objects were created by Helm, not by <b>kubectl apply</b>, and the dry run does not change that.<br>• The output also lists test pods. <b>helm template</b> includes hooks and tests as ordinary objects, unless you add <b>--no-hooks</b>.<br>• Use a dedicated read-only login for this check in CI, because it still talks to the real cluster.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Lint, template, server-side dry run on the merge request. The deploy only happens after merge.\""
+      }
+    ]
+  },
+  {
+    "cat": "6. Build your own chart",
+    "commands": [
+      {
+        "desc": " Create a new chart from the built-in starter",
+        "cmd": "helm create webapp\nfind webapp -type f | sort",
+        "parts": "<b>SCENARIO:</b><br> Your team has its own app and no public chart for it. You make your own. <b>helm create</b> gives you a working starter chart (a small web server) that you change step by step.<br><br><b>WHAT IT DOES:</b><br>• Creates a folder <b>webapp/</b> with everything needed: <b>Chart.yaml</b>, <b>values.yaml</b>, and <b>templates/</b> (Deployment, Service, ServiceAccount, Ingress and more).<br>• The <b>templates/tests/</b> folder holds a ready-made test (used later with <b>helm test</b>).<br><br><b>WATCH OUT:</b><br>• Throw away what you do not need (for example ingress or autoscaling templates) so the chart stays small and readable.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"A chart is just a folder: Chart.yaml for identity, values.yaml for settings, templates for the YAML with blanks.\""
+      },
+      {
+        "desc": " Read Chart.yaml (the identity card) and learn version vs appVersion",
+        "cmd": "grep -vE '^\\s*#|^$' webapp/Chart.yaml",
+        "parts": "<b>SCENARIO:</b><br> A teammate asks \"which number do I change when I release?\" There are two, and mixing them up is a very common mistake.<br><br><b>WHAT IT DOES:</b><br>• <b>version</b> is the version of the CHART (the packaging). Change it whenever the chart changes.<br>• <b>appVersion</b> is the version of the APP inside (for example the image tag). It is information only.<br><br><b>WATCH OUT:</b><br>• Chart repositories identify a chart by <b>version</b>. Publishing a changed chart with the same <b>version</b> is how people end up with different charts under one number.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"version is the chart, appVersion is the app. They move independently.\""
+      },
+      {
+        "desc": " Check a chart for mistakes (lint)",
+        "cmd": "helm lint webapp",
+        "parts": "<b>SCENARIO:</b><br> Before you share the chart, run the spell-checker. Lint catches a missing field, a bad YAML structure or a wrong template.<br><br><b>WHAT IT DOES:</b><br>• Prints <b>[INFO]</b>, <b>[WARNING]</b> or <b>[ERROR]</b> lines and a summary. Errors fail the command.<br><br><b>WATCH OUT:</b><br>• Add <b>--strict</b> in CI so that warnings fail too. Add <b>-f values-prod.yaml</b> to lint with the values you will really use.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"helm lint is the first CI gate for a chart. With --strict and the real values file.\""
+      },
+      {
+        "desc": " Render the chart to YAML on your laptop (the feedback loop for chart authors)",
+        "cmd": "helm template site webapp -n helm-lab | head -50",
+        "parts": "<b>SCENARIO:</b><br> You edit a template and want to see the final YAML immediately, without a cluster. This render-and-read loop is how you develop charts.<br><br><b>WHAT IT DOES:</b><br>• <b>site</b> is the release name used for rendering. It appears in the object names, for example <b>site-webapp</b>.<br>• <b>-n helm-lab</b> sets the namespace used for <b>{{ .Release.Namespace }}</b>.<br><br><b>WATCH OUT:</b><br>• <b>helm template</b> does not validate against the cluster. Use <b>--dry-run=server</b> or the kubectl dry run for that.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Chart authors work in a loop: edit, helm template, read the output.\""
+      },
+      {
+        "desc": " Use values and built-in objects in a template (.Values, .Release, .Chart)",
+        "cmd": "cat > webapp/templates/configmap.yaml <<'EOF'\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: {{ .Release.Name }}-config\ndata:\n  greeting: {{ .Values.greeting | quote }}\n  release: {{ .Release.Name }}\n  namespace: {{ .Release.Namespace }}\n  chart: {{ .Chart.Name }}-{{ .Chart.Version }}\nEOF\necho 'greeting: \"hello from values.yaml\"' >> webapp/values.yaml\nhelm template site webapp -n helm-lab | grep -A8 'kind: ConfigMap'",
+        "parts": "<b>SCENARIO:</b><br> The app needs a config file that shows which release and namespace it runs in, plus a greeting that the team can change. You write the first template of your own.<br><br><b>WHAT IT DOES:</b><br>• <b>{{ ... }}</b> is a blank that Helm fills in when it renders.<br>• <b>.Values</b> is your values file, <b>.Release</b> is the install (name, namespace), <b>.Chart</b> is Chart.yaml.<br>• <b>| quote</b> wraps the value in quotes so YAML reads it as text.<br><br><b>WATCH OUT:</b><br>• Always <b>quote</b> text values. Without it, a value like <b>yes</b> or <b>123</b> can change type.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Templates are YAML with blanks. .Values, .Release and .Chart are the three objects I use every day.\""
+      },
+      {
+        "desc": " Template functions and pipes: upper, default, required, toYaml",
+        "cmd": "cat > webapp/templates/fn-demo.yaml <<'EOF'\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: {{ .Release.Name }}-fn\ndata:\n  upper: {{ .Values.greeting | upper | quote }}\n  fallback: {{ .Values.optional | default \"not-set\" | quote }}\n  owner: {{ required \"Please set --set owner=<team>\" .Values.owner | quote }}\n  limits: |\n{{ toYaml .Values.resources | indent 4 }}\nEOF\nhelm template site webapp --set owner=platform | grep -A9 'name: site-fn'\nhelm template site webapp\nrm webapp/templates/fn-demo.yaml",
+        "parts": "<b>SCENARIO:</b><br> You want the greeting in capitals, a safe fallback when a setting is missing, and a hard stop when someone forgets the mandatory <b>owner</b>. The chart should also copy a whole block (resources) from values.<br><br><b>WHAT IT DOES:</b><br>• <b>|</b> passes a value through a function, like a Linux pipe. <b>upper</b> makes capitals, <b>default \"x\"</b> uses x when the value is empty.<br>• <b>required \"message\" .Values.owner</b> fails the render with your message if <b>owner</b> is empty. Failing early beats deploying something wrong.<br>• <b>toYaml</b> turns a whole block of values back into YAML. <b>indent 4</b> lines it up under its parent.<br><br><b>WATCH OUT:</b><br>• The last <b>helm template</b> is SUPPOSED to fail (<b>owner</b> is not set), so you can see the message.<br>• The file is deleted at the end so the rest of the course stays simple.<br>• A wrong indent number is the most common cause of \"could not find expected ':'\" errors.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"required gives a clear failure at render time instead of a broken deploy at runtime.\""
+      },
+      {
+        "desc": " Make decisions and loops in a template (if, range)",
+        "cmd": "cat > webapp/templates/flow-demo.yaml <<'EOF'\n{{- if .Values.debug }}\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: {{ .Release.Name }}-debug\ndata:\n{{- range $key, $val := .Values.extraEnv }}\n  {{ $key }}: {{ $val | quote }}\n{{- end }}\n{{- end }}\nEOF\nhelm template site webapp | grep 'site-debug' || echo \"(nothing rendered: debug is off)\"\nhelm template site webapp --set debug=true --set extraEnv.LOG_LEVEL=debug --set extraEnv.MODE=test | grep -A5 'site-debug'\nrm webapp/templates/flow-demo.yaml",
+        "parts": "<b>SCENARIO:</b><br> A debug ConfigMap should exist only when someone turns on a debug flag, and it should list every extra setting that was passed. That is a condition plus a loop.<br><br><b>WHAT IT DOES:</b><br>• <b>{{- if .Values.debug }} ... {{- end }}</b> renders the part only when the value is true.<br>• <b>{{- range $key, $val := .Values.extraEnv }}</b> repeats the lines once for every key and value in the map.<br>• The <b>-</b> in <b>{{-</b> removes the blank line the tag would leave behind (whitespace control).<br><br><b>WATCH OUT:</b><br>• Every <b>if</b> and every <b>range</b> needs its own <b>{{- end }}</b>. A missing one is the usual cause of \"unexpected EOF\".<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"if for optional objects, range for lists and maps, and <b>{{-</b> to keep the output tidy.\""
+      },
+      {
+        "desc": " Reuse code with named templates (_helpers.tpl and include)",
+        "cmd": "grep -n 'define \"webapp' webapp/templates/_helpers.tpl\ncat > webapp/templates/helpers-demo.yaml <<'EOF'\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: {{ include \"webapp.fullname\" . }}-labels\n  labels:\n    {{- include \"webapp.labels\" . | nindent 4 }}\nEOF\nhelm template site webapp | grep -B2 -A12 'site-webapp-labels'\nrm webapp/templates/helpers-demo.yaml",
+        "parts": "<b>SCENARIO:</b><br> Ten templates all need the same set of labels. Copying them ten times is how mistakes begin. You define the labels once in <b>_helpers.tpl</b> and include them everywhere.<br><br><b>WHAT IT DOES:</b><br>• <b>_helpers.tpl</b> holds named templates (<b>define \"webapp.labels\"</b>). Files that start with an underscore are not rendered as objects.<br>• <b>include \"name\" .</b> runs a named template. <b>| nindent 4</b> adds a new line and indents the result.<br><br><b>WATCH OUT:</b><br>• Pass the dot (<b>.</b>) to <b>include</b>, or the helper cannot see <b>.Values</b> and <b>.Release</b>.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Shared labels and names live in _helpers.tpl and every template uses include, so a change happens in one place.\""
+      },
+      {
+        "desc": " Restart pods automatically when their config changes (checksum annotation)",
+        "cmd": "# add this under spec.template.metadata.annotations in webapp/templates/deployment.yaml\nchecksum/config: {{ include (print $.Template.BasePath \"/configmap.yaml\") . | sha256sum }}",
+        "parts": "<b>SCENARIO:</b><br> Someone changes the greeting in the ConfigMap, upgrades, and nothing happens. The pods still show the old text, because Kubernetes does not restart pods when a ConfigMap changes. You make the pod template change whenever the config changes, so a restart happens by itself.<br><br><b>WHAT IT DOES:</b><br>• The line computes a fingerprint of the rendered ConfigMap and stores it as a pod annotation.<br>• Change the config, the fingerprint changes, the pod template changes, and Kubernetes does a rolling restart.<br><br><b>WATCH OUT:</b><br>• This is a snippet to paste, not a command to run. It goes under <b>spec.template.metadata.annotations</b>.<br>• It is a very common Helm interview question.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"I add a checksum of the ConfigMap as a pod annotation, so config changes roll the pods.\""
+      },
+      {
+        "desc": " Install your own chart",
+        "cmd": "helm install site ./webapp -n helm-lab --set image.tag=alpine --wait --timeout 3m\nkubectl -n helm-lab get deploy,svc,cm -l app.kubernetes.io/instance=site",
+        "parts": "<b>SCENARIO:</b><br> The chart is ready. You install it just like the public one, but from a folder on disk.<br><br><b>WHAT IT DOES:</b><br>• <b>./webapp</b> is a path. Helm accepts a folder, a <b>.tgz</b> file, a <b>repo/chart</b> name or an <b>oci://</b> address.<br>• <b>--set image.tag=alpine</b> uses a small image (the starter chart's default tag is very old).<br><br><b>WATCH OUT:</b><br>• Always give your own chart a real image tag. Never leave <b>latest</b> or an empty tag in production.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"The same install command works for a folder, an archive, a repo chart or an OCI address.\""
+      },
+      {
+        "desc": " Run the chart's built-in test",
+        "cmd": "helm test site -n helm-lab",
+        "parts": "<b>SCENARIO:</b><br> After a deploy, the pipeline should prove that the Service answers. The starter chart includes a test that starts a small pod and calls the Service.<br><br><b>WHAT IT DOES:</b><br>• A test is a pod defined in <b>templates/tests/</b> with the annotation <b>helm.sh/hook: test</b>.<br>• <b>helm test</b> runs it and reports pass or fail.<br><br><b>WATCH OUT:</b><br>• Tests run against the live release, so they must be safe to run in production (read-only requests).<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"helm test runs smoke checks defined inside the chart, so the check travels with the app.\""
+      },
+      {
+        "desc": " Package the chart into a single file with its own version",
+        "cmd": "helm package webapp --version 0.2.0 --app-version 1.2.3\nhelm show chart webapp-0.2.0.tgz | grep -E '^(version|appVersion)'",
+        "parts": "<b>SCENARIO:</b><br> You want to hand the chart to another team, or upload it to a chart repository. You pack it into one <b>.tgz</b> file with a version number.<br><br><b>WHAT IT DOES:</b><br>• Creates <b>webapp-0.2.0.tgz</b>. <b>--version</b> sets the chart version, <b>--app-version</b> sets the app version.<br><br><b>WATCH OUT:</b><br>• Never overwrite a published version. Increase <b>version</b> for every change.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"package turns the folder into an immutable, versioned archive.\""
+      },
+      {
+        "desc": " Create a simple chart repository (index.yaml) for your packaged charts",
+        "cmd": "mkdir -p charts-repo && cp webapp-0.2.0.tgz charts-repo/\nhelm repo index charts-repo --url https://charts.example.com\nhead -15 charts-repo/index.yaml",
+        "parts": "<b>SCENARIO:</b><br> The team wants a shared place for its charts. A repository is simply a web server (or a bucket) that holds the <b>.tgz</b> files plus an <b>index.yaml</b> that lists them.<br><br><b>WHAT IT DOES:</b><br>• <b>helm repo index</b> scans the folder and writes <b>index.yaml</b> with the name, version and download URL of each chart.<br><br><b>WATCH OUT:</b><br>• Today most teams use an OCI registry instead (next entry), because it needs no <b>index.yaml</b>.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"A classic Helm repo is static files plus an index. OCI is the modern way.\""
+      },
+      {
+        "desc": " Store charts in a container registry (OCI), for example Artifact Registry",
+        "cmd": "gcloud auth print-access-token | helm registry login -u oauth2accesstoken --password-stdin asia-south1-docker.pkg.dev\nhelm push webapp-0.2.0.tgz oci://asia-south1-docker.pkg.dev/terraform-gke-learning/charts\nhelm pull oci://asia-south1-docker.pkg.dev/terraform-gke-learning/charts/webapp --version 0.2.0\nhelm install site oci://asia-south1-docker.pkg.dev/terraform-gke-learning/charts/webapp --version 0.2.0 -n helm-lab",
+        "parts": "<b>SCENARIO:</b><br> The company already stores container images in a registry, so charts go there too. Same login, same permissions, and no extra server to run.<br><br><b>WHAT IT DOES:</b><br>• <b>helm registry login</b> signs in to the registry. For Google Artifact Registry use <b>oauth2accesstoken</b> and a token from gcloud.<br>• <b>helm push</b> uploads the chart. The address has no chart name: Helm takes it from the file.<br>• <b>helm pull</b> and <b>helm install</b> can use the <b>oci://</b> address directly, with <b>--version</b>.<br><br><b>WATCH OUT:</b><br>• This entry was not run against Google Artifact Registry. The push, pull and install flow was checked against a local registry, and the login line is the standard Google pattern.<br>• The repository <b>charts</b> must exist first (a Docker-format Artifact Registry repository).<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"I publish charts to the same registry as my images, so access control and auditing are already solved.\""
+      }
+    ]
+  },
+  {
+    "cat": "7. Dependencies, hooks and values validation",
+    "commands": [
+      {
+        "desc": " Declare a dependency (your app needs another chart, for example a cache)",
+        "cmd": "helm create cache\ncat >> webapp/Chart.yaml <<'EOF'\n\ndependencies:\n  - name: cache\n    version: 0.1.0\n    repository: \"file://../cache\"\n    condition: cache.enabled\nEOF",
+        "parts": "<b>SCENARIO:</b><br> Your app needs a cache next to it, and you want ONE install to create both. Instead of copy-pasting its YAML, you declare it as a dependency (a subchart). Here the cache chart is a local folder. In real life it is usually from a repository.<br><br><b>WHAT IT DOES:</b><br>• <b>dependencies:</b> in Chart.yaml lists the subcharts, their versions and where to get them.<br>• <b>condition: cache.enabled</b> lets users turn the subchart on or off with a single value.<br><br><b>WATCH OUT:</b><br>• For a chart from a repository, <b>repository</b> is its URL. The version should be pinned.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Subcharts let one release install a whole stack, and <b>condition</b> makes each part optional.\""
+      },
+      {
+        "desc": " Download the dependencies (and lock their versions)",
+        "cmd": "helm dependency update webapp\nls webapp/charts\nhelm dependency list webapp",
+        "parts": "<b>SCENARIO:</b><br> The chart now needs the cache chart to be present before it can render or be packaged.<br><br><b>WHAT IT DOES:</b><br>• <b>helm dependency update</b> fetches each dependency into <b>webapp/charts/</b> and writes <b>Chart.lock</b> with the exact versions.<br>• <b>helm dependency list</b> shows what is declared and whether it is present.<br><br><b>WATCH OUT:</b><br>• Commit <b>Chart.lock</b>. Run <b>helm dependency build</b> in CI to get exactly the locked versions.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"update resolves and writes the lock file, build restores exactly what the lock says.\""
+      },
+      {
+        "desc": " Set a value inside a subchart (prefix it with the subchart's name)",
+        "cmd": "helm template site webapp --set cache.replicaCount=3 | grep -E '^kind: Deployment|replicas:'",
+        "parts": "<b>SCENARIO:</b><br> The cache needs three copies, while your own app needs one. The setting belongs to the subchart, so the parent chart passes it down.<br><br><b>WHAT IT DOES:</b><br>• Values under the subchart's name (<b>cache:</b>) reach the subchart. <b>cache.replicaCount</b> is the cache's <b>replicaCount</b>.<br><br><b>WATCH OUT:</b><br>• Two Deployments now come out of one chart, one per chart. Count them.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Settings for a subchart live under its name in the parent's values.\""
+      },
+      {
+        "desc": " Turn a subchart on or off with a condition",
+        "cmd": "helm template site webapp | grep -c '^kind: Deployment'\nhelm template site webapp --set cache.enabled=false | grep -c '^kind: Deployment'",
+        "parts": "<b>SCENARIO:</b><br> In dev you do not need the cache and you want the environment to be smaller. One flag removes the whole subchart.<br><br><b>WHAT IT DOES:</b><br>• By default there are two Deployments (app plus cache). With <b>cache.enabled=false</b> only the app remains.<br><br><b>WATCH OUT:</b><br>• If <b>condition</b> is missing from the chart, the subchart is always installed.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Conditions and tags make parts of a stack optional per environment.\""
+      },
+      {
+        "desc": " Run a job before an upgrade (hooks, for example a database migration)",
+        "cmd": "mkdir -p webapp/templates/hooks\ncat > webapp/templates/hooks/pre-upgrade-job.yaml <<'EOF'\napiVersion: batch/v1\nkind: Job\nmetadata:\n  name: {{ .Release.Name }}-pre-upgrade\n  annotations:\n    \"helm.sh/hook\": pre-upgrade\n    \"helm.sh/hook-weight\": \"0\"\n    \"helm.sh/hook-delete-policy\": before-hook-creation\nspec:\n  backoffLimit: 0\n  template:\n    spec:\n      restartPolicy: Never\n      containers:\n        - name: migrate\n          image: busybox:1.36\n          command: [\"sh\", \"-c\", \"echo running database migration; sleep 3; echo migration done\"]\nEOF\nhelm upgrade site ./webapp -n helm-lab --set image.tag=alpine --set cache.image.tag=alpine --wait --timeout 3m\nkubectl -n helm-lab logs job/site-pre-upgrade",
+        "parts": "<b>SCENARIO:</b><br> A new version of the app needs its database changed first. You want a job that runs BEFORE the new pods start, and the upgrade must stop if the job fails.<br><br><b>WHAT IT DOES:</b><br>• A hook is a normal object with the annotation <b>helm.sh/hook</b>. <b>pre-upgrade</b> means \"run before the upgrade starts\".<br>• Helm waits for the job to finish. If it fails, the upgrade stops and nothing changes.<br>• <b>hook-delete-policy: before-hook-creation</b> removes the previous run's job before creating the new one, so you can still read the logs of the last run.<br><br><b>WATCH OUT:</b><br>• Hooks are not part of the release's normal objects, so <b>helm uninstall</b> does not remove them unless a delete policy says so.<br>• A hook that cannot finish blocks every deploy. Keep migrations idempotent.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Hooks run jobs at a point in the release life cycle: pre-install, pre-upgrade, post-upgrade, and so on.\""
+      },
+      {
+        "desc": " See which hooks a release has",
+        "cmd": "helm get hooks site -n helm-lab",
+        "parts": "<b>SCENARIO:</b><br> An upgrade is slow and you suspect a hook. You list what hooks the release has and what they do.<br><br><b>WHAT IT DOES:</b><br>• Prints the YAML of each hook object, including its annotations (when it runs, its weight and delete policy).<br><br><b>WATCH OUT:</b><br>• <b>helm template</b> includes hooks in its output. Add <b>--no-hooks</b> to leave them out.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"get hooks is how I check what runs around an install or upgrade.\""
+      },
+      {
+        "desc": " Validate the values with a schema (reject bad input early)",
+        "cmd": "cat > webapp/values.schema.json <<'EOF'\n{\n  \"$schema\": \"https://json-schema.org/draft-07/schema#\",\n  \"type\": \"object\",\n  \"properties\": {\n    \"replicaCount\": { \"type\": \"integer\", \"minimum\": 1 }\n  }\n}\nEOF\nhelm lint webapp\nhelm template site webapp --set replicaCount=0\nhelm template site webapp --set replicaCount=two",
+        "parts": "<b>SCENARIO:</b><br> Someone sets <b>replicaCount=0</b> or types <b>two</b>. You want the render to fail with a clear message instead of deploying something broken.<br><br><b>WHAT IT DOES:</b><br>• <b>values.schema.json</b> describes the allowed shape of values. Helm checks it during lint, template, install and upgrade.<br>• The last two commands are SUPPOSED to fail. Read the error message.<br><br><b>WATCH OUT:</b><br>• The schema applies to the values of subcharts too.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"A values schema turns typos and nonsense values into early, readable errors.\""
+      }
+    ]
+  },
+  {
+    "cat": "8. Production and troubleshooting",
+    "commands": [
+      {
+        "desc": " See where Helm stores its release data (Secrets in your namespace)",
+        "cmd": "kubectl -n helm-lab get secrets -l owner=helm",
+        "parts": "<b>SCENARIO:</b><br> Someone asks \"where does Helm remember all this?\" You show that there is no database. Each revision is a Secret in the same namespace.<br><br><b>WHAT IT DOES:</b><br>• Every revision is a Secret named <b>sh.helm.release.v1.RELEASE.vREVISION</b>.<br>• Helm 3 reads these Secrets to know the history, which is why <b>helm history</b> and <b>rollback</b> work.<br><br><b>WATCH OUT:</b><br>• Anyone who can read Secrets in the namespace can read your release values. That includes the passwords you passed with <b>--set</b>.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Helm 3 stores each revision as a Secret in the release namespace, which also means it inherits Kubernetes RBAC.\""
+      },
+      {
+        "desc": " Limit how many old revisions Helm keeps",
+        "cmd": "helm upgrade --install site ./webapp -n helm-lab --set image.tag=alpine --set cache.image.tag=alpine --history-max 5 --wait --timeout 3m\nhelm history site -n helm-lab",
+        "parts": "<b>SCENARIO:</b><br> A busy release is upgraded dozens of times a day. Each revision is a Secret, so the namespace slowly fills with old ones.<br><br><b>WHAT IT DOES:</b><br>• <b>--history-max 5</b> keeps only the 5 newest revisions and deletes older ones.<br><br><b>WATCH OUT:</b><br>• In this course the release has fewer than 5 revisions, so nothing is deleted yet. Run a few more upgrades to see the oldest revision disappear.<br>• You cannot roll back further than the history you kept.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"I set history-max in pipelines to bound the number of release Secrets.\""
+      },
+      {
+        "desc": " One values file per environment",
+        "cmd": "cat > values-prod.yaml <<'EOF'\nreplicaCount: 3\nresources:\n  limits:\n    cpu: 200m\n    memory: 128Mi\nEOF\nhelm template site webapp -f values-prod.yaml | grep 'replicas:'",
+        "parts": "<b>SCENARIO:</b><br> Dev runs one copy with small limits and production runs three with larger limits. The chart is the same and only the values file changes.<br><br><b>WHAT IT DOES:</b><br>• The pipeline picks <b>-f values-$ENV.yaml</b> based on the target environment.<br><br><b>WATCH OUT:</b><br>• Keep the files short and review them in merge requests. They are the real difference between environments.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"One chart, one values file per environment, and the pipeline chooses the file.\""
+      },
+      {
+        "desc": " The standard CI sequence: lint, render-check, atomic deploy",
+        "cmd": "helm lint webapp --strict -f values-prod.yaml\nhelm template site webapp -n helm-lab -f values-prod.yaml | kubectl -n helm-lab apply --dry-run=server -f -\nhelm upgrade --install site ./webapp -n helm-lab --set image.tag=alpine --set cache.image.tag=alpine --atomic --wait --timeout 3m",
+        "parts": "<b>SCENARIO:</b><br> You are asked in an interview \"what does your Helm pipeline do?\" This is the answer, in the order a pipeline runs it.<br><br><b>WHAT IT DOES:</b><br>• Lint with <b>--strict</b> and the real values file. Render and validate against the cluster with a server-side dry run. Deploy with <b>upgrade --install --atomic --wait</b>.<br><br><b>WATCH OUT:</b><br>• Run the first two on every merge request and the third only on the main branch.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Lint, template with a server-side dry run, then upgrade --install --atomic --wait.\""
+      },
+      {
+        "desc": " Secrets passed with --set are visible (and what to do about it)",
+        "cmd": "helm upgrade site ./webapp -n helm-lab --reuse-values --set-string dbPassword=s3cr3t-demo --wait --timeout 3m\nhelm get values site -n helm-lab | grep dbPassword\nLATEST=$(helm history site -n helm-lab -o json | jq -r 'map(.revision) | max')\nkubectl -n helm-lab get secret sh.helm.release.v1.site.v$LATEST -o jsonpath='{.data.release}' | base64 -d | base64 -d | gunzip | jq -r '.config.dbPassword'",
+        "parts": "<b>SCENARIO:</b><br> The pipeline passes the database password with <b>--set</b> and a colleague asks \"is that safe?\" You show that it is not: anyone with access can read it back, in two ways.<br><br><b>WHAT IT DOES:</b><br>• <b>helm get values</b> prints the password in clear text.<br>• The release Secret only looks hidden. Decoding it shows the same value, because the data is encoded but not encrypted.<br><br><b>WATCH OUT:</b><br>• Better: let the app read an existing Kubernetes Secret (created by an external secrets tool or sealed secrets), and pass only the Secret's NAME to the chart.<br>• Do not commit passwords into values files either.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Helm values are not a secret store. I pass references to secrets, never the secret itself.\""
+      },
+      {
+        "desc": " Detect drift: compare what Helm applied with what is live",
+        "cmd": "kubectl -n helm-lab scale deploy/site-webapp --replicas=5\nhelm get manifest site -n helm-lab | kubectl -n helm-lab diff -f - | head -20",
+        "parts": "<b>SCENARIO:</b><br> An on-call engineer scaled the app by hand during an incident and forgot to tell anyone. Now the live cluster no longer matches what Helm thinks it deployed. This is drift.<br><br><b>WHAT IT DOES:</b><br>• <b>helm get manifest</b> is what Helm applied. <b>kubectl diff</b> compares it with the live objects and prints the differences. Lines starting with <b>-</b> are what is LIVE and lines starting with <b>+</b> are what HELM wants.<br><br><b>WHAT YOU SEE:</b><br><span style=\"font-family:var(--mono);font-size:12px;white-space:pre-wrap\">-  replicas: 5\n+  replicas: 1</span><br><br><b>WATCH OUT:</b><br>• Helm does not watch the cluster. It only looks at the live state during the next upgrade.<br>• <b>kubectl diff</b> also shows noise such as <b>generation:</b> lines. Look for the fields you care about.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"To find drift I diff the last rendered manifest against the live objects.\""
+      },
+      {
+        "desc": " Does the next upgrade fix the drift? (yes, and that matters for scaling)",
+        "cmd": "helm upgrade --install site ./webapp -n helm-lab --set image.tag=alpine --set cache.image.tag=alpine --wait --timeout 3m\nkubectl -n helm-lab get deploy site-webapp -o jsonpath='{.spec.replicas}'; echo",
+        "parts": "<b>SCENARIO:</b><br> After the incident someone says \"just run the pipeline again and Helm will put things back.\" Is that true? You test it, because it also decides whether a manual <b>kubectl scale</b> survives the next deploy.<br><br><b>WHAT IT DOES:</b><br>• The upgrade ran with the same chart and the same values, and the replicas went from 5 back to 1.<br>• Helm compares the live object with what the chart wants. A field that is written in the chart (here <b>replicas</b>) is set back to the chart's value.<br><br><b>WHAT YOU SEE:</b><br><span style=\"font-family:var(--mono);font-size:12px;white-space:pre-wrap\">Release \"site\" has been upgraded. Happy Helming!\n1</span><br><br><b>WATCH OUT:</b><br>• This is why a manual <b>kubectl scale</b> is only temporary on a Helm-managed app: the next deploy resets it. For a lasting change, change the values file.<br>• If an autoscaler (HPA) manages the replicas, do NOT let the chart also set <b>replicas</b>, or every deploy will fight the autoscaler.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"Helm resets fields that the chart owns on every upgrade. A manual scale lasts only until the next deploy.\""
+      },
+      {
+        "desc": " Make a release get stuck on purpose (a cancelled pipeline), then see the error",
+        "cmd": "helm upgrade demo podinfo/podinfo -n helm-lab -f my-values.yaml --set image.tag=nope --wait --timeout 5m > /dev/null 2>&1 &\nsleep 8\nkill -9 $!\nhelm list -n helm-lab --pending\nhelm upgrade demo podinfo/podinfo -n helm-lab -f my-values.yaml",
+        "parts": "<b>SCENARIO:</b><br> A pipeline was cancelled in the middle of an upgrade. Now every new deploy fails with \"another operation (install/upgrade/rollback) is in progress\" and the team is blocked. You reproduce it safely so you recognise it instantly.<br><br><b>WHAT IT DOES:</b><br>• The first command starts an upgrade that cannot finish (a bad image) in the background. After 8 seconds we kill Helm hard, like a cancelled runner.<br>• <b>--pending</b> lists the release, stuck in <b>pending-upgrade</b>.<br>• The last command is SUPPOSED to fail.<br><br><b>WHAT YOU SEE:</b><br><span style=\"font-family:var(--mono);font-size:12px;white-space:pre-wrap\">NAME   NAMESPACE   REVISION   STATUS\ndemo   helm-lab    10         pending-upgrade\nError: UPGRADE FAILED: another operation (install/upgrade/rollback) is in progress</span><br><br><b>WATCH OUT:</b><br>• Helm marks a revision <b>pending-upgrade</b> when it starts and clears it when it finishes. A killed Helm never clears it, so Helm refuses all further changes to that release.<br>• Stuck releases are common after a pipeline is cancelled or a runner is killed."
+      },
+      {
+        "desc": " Fix the stuck release (rollback clears it)",
+        "cmd": "helm rollback demo -n helm-lab\nhelm history demo -n helm-lab | tail -4\nhelm upgrade demo podinfo/podinfo -n helm-lab -f my-values.yaml --atomic --wait --timeout 3m",
+        "parts": "<b>SCENARIO:</b><br> The pipeline is blocked and everyone is waiting. You recover the release in two commands and prove that deploys work again.<br><br><b>WHAT IT DOES:</b><br>• <b>helm rollback</b> with no revision number goes back to the last good revision. It creates a NEW revision, and that clears the blocked state.<br>• The stuck revision stays in the history as <b>pending-upgrade</b>, which is harmless.<br>• The last command shows that normal upgrades work again.<br><br><b>WHAT YOU SEE:</b><br><span style=\"font-family:var(--mono);font-size:12px;white-space:pre-wrap\">Rollback was a success! Happy Helming!\n10   pending-upgrade   Preparing upgrade\n11   deployed          Rollback to 9</span><br><br><b>WATCH OUT:</b><br>• If rollback also refuses, delete the stuck revision's Secret (<b>sh.helm.release.v1.NAME.vN</b>) and try again. Do that only after you understand which revision is stuck.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"A killed pipeline can leave a release in pending-upgrade. I find it with --pending and recover with helm rollback.\""
+      },
+      {
+        "desc": " Filter releases by state (all, failed, pending)",
+        "cmd": "helm list -n helm-lab -a\nhelm list -n helm-lab --failed\nhelm list -n helm-lab --pending",
+        "parts": "<b>SCENARIO:</b><br> The on-call needs to know which releases need attention. Three filters answer it.<br><br><b>WHAT IT DOES:</b><br>• <b>-a</b> shows every state, including uninstalled ones kept in history. <b>--failed</b> and <b>--pending</b> show only those states.<br><br><b>WATCH OUT:</b><br>• Plain <b>helm list</b> hides releases that are failed or pending in some versions. When something is strange, run it with <b>-a</b>.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"helm list -a is the first check when a release 'disappears'.\""
+      },
+      {
+        "desc": " Uninstall but keep the history (so you can bring it back)",
+        "cmd": "helm uninstall site -n helm-lab --keep-history\nhelm list -n helm-lab -a\nhelm rollback site 1 -n helm-lab --wait --timeout 3m\nhelm list -n helm-lab",
+        "parts": "<b>SCENARIO:</b><br> A team asks you to remove an app temporarily, and then asks for it back. With <b>--keep-history</b> the release record stays, so the app can be restored with one command.<br><br><b>WHAT IT DOES:</b><br>• The objects are deleted but the history stays, with the status <b>uninstalled</b>.<br>• <b>helm rollback</b> to a revision re-creates the app.<br><br><b>WATCH OUT:</b><br>• Without <b>--keep-history</b> the history is gone and the app must be installed again.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"uninstall --keep-history makes removal reversible.\""
+      },
+      {
+        "desc": " Clean up everything you created in this course",
+        "cmd": "helm uninstall site -n helm-lab\nhelm uninstall demo -n helm-lab\nkubectl delete namespace helm-lab\nhelm repo remove podinfo",
+        "parts": "<b>SCENARIO:</b><br> You finished practising. The cleanup removes the releases, the namespace and the repository entry, so your cluster is as it was.<br><br><b>WHAT IT DOES:</b><br>• Uninstall each release, delete the namespace (this also removes any leftover Secrets) and remove the repo.<br><br><b>WATCH OUT:</b><br>• On a shared cluster, never delete a namespace you did not create.<br><br><b>SAY IT IN AN INTERVIEW:</b><br> \"I clean up what I create, namespaces last.\""
+      }
+    ]
+  }
+];
+
   // ============ VM & CLUSTER PIPELINES (real pipeline configs, names generalised; add more entries as they come) ============
   // Same schema as the other reference tabs: {cat, commands:[{desc, cmd, parts}]}. Per-pipeline notes use the
   // shared refEdits store, keyed by tab + cmd text, so never edit an existing cmd string without migrating its note.
@@ -2527,6 +2929,12 @@
     "Every <b style=\"color:var(--kube)\">kubectl</b> command for operating workloads inside an existing cluster — from context setup through cleanup. Real example values throughout (e.g. <b style=\"color:var(--kube)\">web</b>, <b style=\"color:var(--kube)\">drill</b>, <b style=\"color:var(--kube)\">nginx:alpine</b>) — swap in your own names.",
     "Search kubectl commands — e.g. rollback, logs, scale, secret…",
     "kubectl"
+  );
+  const renderHelmRef=makeRefRenderer(
+    "#helmView", HELM_REF_DATA,
+    "<b style=\"color:var(--kube)\">Helm</b> from zero to production, <b style=\"color:var(--kube)\">in order</b>: first commands → repositories → install and inspect → values → upgrade and rollback → build your own chart → dependencies, hooks and schemas → production and troubleshooting. Every entry has a <b style=\"color:var(--kube)\">scenario</b> (why you would run it), a command you can copy, and what to watch out for. The commands were run on a real cluster, so they work as written. Practise with a free local cluster (kind or Docker Desktop) in a throwaway namespace named <b style=\"color:var(--kube)\">helm-lab</b>. Every entry has an <b style=\"color:var(--kube)\">add your notes</b> box.",
+    "Search Helm commands — e.g. upgrade, rollback, atomic, values, hooks…",
+    "helm"
   );
   const renderTerraformRef=makeRefRenderer(
     "#terraformView", TERRAFORM_REF_DATA,
@@ -3163,12 +3571,14 @@
       $("#drillsView").style.display = v==="drills" ? "" : "none";
       $("#refView").style.display = v==="gke" ? "" : "none";
       $("#kubectlView").style.display = v==="kubectl" ? "" : "none";
+      $("#helmView").style.display = v==="helm" ? "" : "none";
       $("#terraformView").style.display = v==="terraform" ? "" : "none";
       $("#cicdView").style.display = v==="cicd" ? "" : "none";
       $("#pipesView").style.display = v==="pipes" ? "" : "none";
       $("#notesView").style.display = v==="notes" ? "" : "none";
       if(v==="gke") renderRef();
       if(v==="kubectl") renderKubectlRef();
+      if(v==="helm") renderHelmRef();
       if(v==="terraform") renderTerraformRef();
       if(v==="cicd") renderCicdSub();
       if(v==="pipes") renderPipesSub();
@@ -3242,6 +3652,7 @@
           try{localStorage.setItem(REFEDITS_LS_KEY,JSON.stringify(refEdits));}catch(e){}
           if(currentView==="gke") renderRef();
           else if(currentView==="kubectl") renderKubectlRef();
+          else if(currentView==="helm") renderHelmRef();
           else if(currentView==="terraform") renderTerraformRef();
           else if(currentView==="cicd"&&cicdSubView==="scripts") renderCicdScripts();
           else if(currentView==="pipes") renderPipesSub();
