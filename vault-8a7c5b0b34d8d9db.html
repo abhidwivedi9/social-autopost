@@ -340,10 +340,12 @@
       <button class="tab on" data-pipesview="vm">🖥️ VMs</button>
       <button class="tab" data-pipesview="cluster">☸️ Cluster</button>
       <button class="tab" data-pipesview="gcp">☁️ GCP &amp; Terraform</button>
+      <button class="tab" data-pipesview="qa">🎤 Interview Q&amp;A</button>
     </div>
     <div id="pipesVmView"></div>
     <div id="pipesClusterView" style="display:none"></div>
     <div id="pipesGcpView" style="display:none"></div>
+    <div id="pipesQAView" style="display:none"></div>
   </div>
 
   <div id="notesView" style="display:none"></div>
@@ -3228,13 +3230,126 @@
     return el;
   }
 
-  let pipesSubView="vm"; // which inner tab (VMs / Cluster / GCP) of the Pipelines view was last active
+  // ============ PIPELINES INTERVIEW Q&A (starts empty; own storage key + Firebase path) ============
+  const PIPESQA_LS_KEY="gke_vault_pipesqa_v1";
+  function loadPipesQA(){
+    try{const raw=localStorage.getItem(PIPESQA_LS_KEY);if(raw){const p=JSON.parse(raw);if(Array.isArray(p))return p;}}catch(e){}
+    return [];
+  }
+  function persistPipesQA(){
+    try{localStorage.setItem(PIPESQA_LS_KEY,JSON.stringify(pipesQA));}
+    catch(e){toast("Can't save in preview — download the file to enable saving");}
+    syncPush("vault/pipesQAJson",pipesQA);
+  }
+  let pipesQA=loadPipesQA();
+  let pipesQAOpen={}, pipesQAEditing={}, pipesQASearch="";
+
+  function renderPipesQA(){
+    const view=$("#pipesQAView");view.innerHTML="";
+    const intro=document.createElement("div");
+    intro.className="refintro";
+    intro.textContent="Your own interview questions and answers for the pipelines above. Click ＋ Add Q&A, type the question and your answer, and save. Every entry is editable and searchable.";
+    view.appendChild(intro);
+
+    const top=document.createElement("div");
+    top.className="searchrow";
+    top.style.marginBottom="16px";
+    top.innerHTML=`<div class="search"><span class="icon">⌕</span><input id="pipesQASearch" placeholder="Search Q&A…" autocomplete="off" /></div>
+      <button class="btn primary" id="addPipesQABtn">＋ Add Q&amp;A</button>`;
+    view.appendChild(top);
+    const sInput=top.querySelector("#pipesQASearch");
+    sInput.value=pipesQASearch;
+    sInput.addEventListener("input",()=>{pipesQASearch=sInput.value;renderPipesQAList();});
+    top.querySelector("#addPipesQABtn").addEventListener("click",()=>{
+      const n={id:nextQAId(),q:"",a:"",updated:Date.now()};
+      pipesQA.unshift(n);pipesQAEditing[n.id]=true;pipesQAOpen[n.id]=true;
+      persistPipesQA();renderPipesQAList();
+    });
+
+    const list=document.createElement("div");list.id="pipesQAList";
+    view.appendChild(list);
+    renderPipesQAList();
+
+    function renderPipesQAList(){
+      const list=$("#pipesQAList");list.innerHTML="";
+      const q=pipesQASearch.trim().toLowerCase();
+      const shown=pipesQA.filter(n=>!q||(n.q+" "+n.a).toLowerCase().includes(q));
+      if(!shown.length){
+        const e=document.createElement("div");e.className="empty";
+        e.textContent=pipesQA.length?'No Q&A match "'+q+'"':"No Q&A yet — click ＋ Add Q&A to start.";
+        list.appendChild(e);return;
+      }
+      shown.forEach(n=>list.appendChild(pipesQACard(n)));
+    }
+  }
+
+  function pipesQACard(n){
+    const el=document.createElement("div");
+    const editing=!!pipesQAEditing[n.id];
+    const open=editing||!!pipesQAOpen[n.id];
+    el.className="mynote"+(open?" open":"");
+    const qText=n.q||"(untitled question)";
+
+    if(editing){
+      el.innerHTML=`<div class="mynote-head"><span class="mtitle">${n.q?esc(n.q):"New Q&A"}</span><span class="mchev">▶</span></div>
+        <div class="mynote-body" style="display:block">
+          <input class="mtitlein" placeholder="Question" value="${esc(n.q)}" />
+          <textarea class="mbodyin" placeholder="Answer…">${esc(n.a)}</textarea>
+          <div class="mynote-actions">
+            <button class="btn sm" data-act="cancel">Cancel</button>
+            <button class="btn primary sm" data-act="save">Save Q&amp;A</button>
+          </div>
+        </div>`;
+      el.querySelector('[data-act="save"]').addEventListener("click",()=>{
+        n.q=el.querySelector(".mtitlein").value.trim();
+        n.a=el.querySelector(".mbodyin").value;
+        n.updated=Date.now();
+        pipesQAEditing[n.id]=false;pipesQAOpen[n.id]=true;
+        persistPipesQA();renderPipesQA();toast("Q&A saved");
+      });
+      el.querySelector('[data-act="cancel"]').addEventListener("click",()=>{
+        if(!n.q&&!n.a){pipesQA=pipesQA.filter(x=>x.id!==n.id);}
+        pipesQAEditing[n.id]=false;
+        persistPipesQA();renderPipesQA();
+      });
+    }else{
+      el.innerHTML=`<div class="mynote-head">
+          <span class="mchev">▶</span>
+          <span class="mtitle" style="flex:1">${esc(qText)}</span>
+          <span class="mmeta">${fmtDate(n.updated)}</span>
+        </div>
+        <div class="mynote-body">
+          <pre>${esc(n.a)||'<span style="color:var(--muted-2);font-style:italic">no answer yet</span>'}</pre>
+          <div class="mynote-actions">
+            <button class="btn sm" data-act="edit">✎ edit</button>
+            <button class="btn sm" data-act="copy">⧉ copy</button>
+            <button class="linkbtn danger" data-act="del" style="margin-left:auto">delete</button>
+          </div>
+        </div>`;
+      el.querySelector(".mynote-head").addEventListener("click",(e)=>{
+        if(e.target.closest("[data-act]"))return;
+        pipesQAOpen[n.id]=!open;renderPipesQA();
+      });
+      el.querySelector('[data-act="edit"]').addEventListener("click",(e)=>{e.stopPropagation();pipesQAEditing[n.id]=true;pipesQAOpen[n.id]=true;renderPipesQA();});
+      el.querySelector('[data-act="copy"]').addEventListener("click",(e)=>{e.stopPropagation();copy(n.q+"\n\n"+n.a,e.target);});
+      el.querySelector('[data-act="del"]').addEventListener("click",(e)=>{
+        e.stopPropagation();
+        if(!confirm("Delete this Q&A? This can't be undone."))return;
+        pipesQA=pipesQA.filter(x=>x.id!==n.id);
+        persistPipesQA();renderPipesQA();toast("Q&A deleted");
+      });
+    }
+    return el;
+  }
+
+  let pipesSubView="vm"; // which inner tab (VMs / Cluster / GCP / Q&A) of the Pipelines view was last active
   function renderPipesSub(){
     $("#pipesVmView").style.display = pipesSubView==="vm" ? "" : "none";
     $("#pipesClusterView").style.display = pipesSubView==="cluster" ? "" : "none";
     $("#pipesGcpView").style.display = pipesSubView==="gcp" ? "" : "none";
+    $("#pipesQAView").style.display = pipesSubView==="qa" ? "" : "none";
     document.querySelectorAll("#pipesSubTabs .tab").forEach(b=>b.classList.toggle("on", b.dataset.pipesview===pipesSubView));
-    if(pipesSubView==="vm") renderPipesVm(); else if(pipesSubView==="cluster") renderPipesCluster(); else renderPipesGcp();
+    if(pipesSubView==="vm") renderPipesVm(); else if(pipesSubView==="cluster") renderPipesCluster(); else if(pipesSubView==="gcp") renderPipesGcp(); else renderPipesQA();
   }
 
   let cicdSubView="scripts"; // which CI/CD inner tab (scripts vs qa) was last active
@@ -3523,28 +3638,31 @@
   // ============ EXPORT / IMPORT ============
   // Bundles all four stores (drills, My Notes, per-command ref notes, CI/CD Q&A) into one file —
   // a plain array export (the old format) still imports fine, just without the other three.
-  function exportBundle(){return {data:data, myNotes:myNotes, refEdits:refEdits, cicdQA:cicdQA, exportedAt:new Date().toISOString()};}
+  function exportBundle(){return {data:data, myNotes:myNotes, refEdits:refEdits, cicdQA:cicdQA, pipesQA:pipesQA, exportedAt:new Date().toISOString()};}
   function exportJson(){const blob=new Blob([JSON.stringify(exportBundle(),null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="gke-vault-"+new Date().toISOString().slice(0,10)+".json";a.click();URL.revokeObjectURL(a.href);toast("Exported");}
   function importJson(file){const r=new FileReader();r.onload=()=>{
     try{
       const p=JSON.parse(r.result);
-      let newData,newNotes=null,newRefEdits=null,newCicdQA=null;
+      let newData,newNotes=null,newRefEdits=null,newCicdQA=null,newPipesQA=null;
       if(Array.isArray(p)){newData=p;}
       else if(p&&Array.isArray(p.data)){
         newData=p.data;
         if(Array.isArray(p.myNotes))newNotes=p.myNotes;
         if(p.refEdits&&typeof p.refEdits==="object")newRefEdits=p.refEdits;
         if(Array.isArray(p.cicdQA))newCicdQA=p.cicdQA;
+        if(Array.isArray(p.pipesQA))newPipesQA=p.pipesQA;
       }else throw 0;
       const parts=[newData.length+" topics"];
       if(newNotes)parts.push(newNotes.length+" My Notes entries");
       if(newRefEdits)parts.push(Object.keys(newRefEdits).length+" command notes");
       if(newCicdQA)parts.push(newCicdQA.length+" CI/CD Q&A entries");
+      if(newPipesQA)parts.push(newPipesQA.length+" Pipelines Q&A entries");
       if(!confirm("Import "+parts.join(", ")+"? Replaces current vault (export first)."))return;
       data=newData;activeTopic=data[0]?data[0].id:null;persist();
       if(newNotes){myNotes=newNotes;persistNotes();}
       if(newRefEdits){refEdits=newRefEdits;migrateRefEditKeys(refEdits);persistRefEdits();}
       if(newCicdQA){cicdQA=mergeCicdQASeed(newCicdQA);persistCicdQA();}
+      if(newPipesQA){pipesQA=newPipesQA;persistPipesQA();}
       render();toast("Imported");
     }catch(e){toast("Not a valid vault JSON");}
   };r.readAsText(file);}
@@ -3668,6 +3786,18 @@
           cicdQA=mergeCicdQASeed(v);
           try{localStorage.setItem(CICDQA_LS_KEY,JSON.stringify(cicdQA));}catch(e){}
           if(currentView==="cicd"&&cicdSubView==="qa") renderCicdQA();
+        }
+      }catch(e){}
+    });
+    db.ref("vault/pipesQAJson").on("value",snap=>{
+      const raw=snap.val();
+      if(raw===null)return;
+      try{
+        const v=JSON.parse(raw);
+        if(Array.isArray(v)){
+          pipesQA=v;
+          try{localStorage.setItem(PIPESQA_LS_KEY,JSON.stringify(pipesQA));}catch(e){}
+          if(currentView==="pipes"&&pipesSubView==="qa") renderPipesQA();
         }
       }catch(e){}
     });
