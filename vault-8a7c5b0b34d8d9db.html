@@ -2859,7 +2859,42 @@
     }
   }
 
-  function makeRefRenderer(containerId, dataArr, introText, placeholderText, tabKey){
+  // Editable explanation line under a command (only for tabs that pass editableParts=true).
+  // The built-in text stays in the data; an edit is stored in refEdits under tabKey+"-parts::"+cmd, so "reset" just deletes it.
+  function partsToText(h){const d=document.createElement("div");d.innerHTML=String(h||"").replace(/<br[^>]*>/gi,String.fromCharCode(10));return d.textContent;}
+  function renderParts(container,key,defHtml){
+    const edited=refEdits[key];
+    if(refEditingKeys[key]){
+      container.innerHTML=`<textarea class="runinput" placeholder="Explain this command in your own words…"></textarea>
+        <div class="runactions"><button class="linkbtn" data-act="cancel">cancel</button><button class="btn sm primary" data-act="save">save</button></div>`;
+      container.querySelector(".runinput").value=edited!==undefined?edited:partsToText(defHtml);
+      container.querySelector('[data-act="save"]').addEventListener("click",()=>{
+        const val=container.querySelector(".runinput").value.trim();
+        if(val&&val!==partsToText(defHtml).trim())refEdits[key]=val;else delete refEdits[key];
+        refEditingKeys[key]=false;
+        persistRefEdits();
+        renderParts(container,key,defHtml);
+      });
+      container.querySelector('[data-act="cancel"]').addEventListener("click",()=>{
+        refEditingKeys[key]=false;renderParts(container,key,defHtml);
+      });
+      return;
+    }
+    container.innerHTML="";
+    if(edited!==undefined){
+      const t=document.createElement("div");t.className="rparts";t.style.whiteSpace="pre-wrap";t.textContent=edited;container.appendChild(t);
+    }else if(defHtml){
+      const t=document.createElement("div");t.className="rparts";t.innerHTML=defHtml;container.appendChild(t);
+    }
+    const bar=document.createElement("div");bar.style.cssText="display:flex;gap:6px;margin-top:2px";
+    bar.innerHTML=`<button class="linkbtn" data-act="edit">✎ ${edited!==undefined||defHtml?"edit explanation":"add explanation"}</button>${edited!==undefined&&defHtml?'<button class="linkbtn" data-act="reset">↺ reset to original</button>':""}`;
+    bar.querySelector('[data-act="edit"]').addEventListener("click",()=>{refEditingKeys[key]=true;renderParts(container,key,defHtml);});
+    const rb=bar.querySelector('[data-act="reset"]');
+    if(rb)rb.addEventListener("click",()=>{delete refEdits[key];persistRefEdits();renderParts(container,key,defHtml);});
+    container.appendChild(bar);
+  }
+
+  function makeRefRenderer(containerId, dataArr, introText, placeholderText, tabKey, editableParts){
     let openState={}, searchState="";
     return function render(){
       const view=$(containerId);view.innerHTML="";
@@ -2885,7 +2920,7 @@
         const q=searchState.trim().toLowerCase();
         let anyMatch=false;
         dataArr.forEach((cat,ci)=>{
-          const cmds=q?cat.commands.filter(c=>(c.desc+" "+c.cmd+" "+(c.parts||"")+" "+(refEdits[tabKey+"::"+c.cmd]||"")).toLowerCase().includes(q)):cat.commands;
+          const cmds=q?cat.commands.filter(c=>(c.desc+" "+c.cmd+" "+(c.parts||"")+" "+(refEdits[tabKey+"::"+c.cmd]||"")+" "+(editableParts?(refEdits[tabKey+"-parts::"+c.cmd]||""):"")).toLowerCase().includes(q)):cat.commands;
           if(!cmds.length) return;
           anyMatch=true;
           const open=!!openState[ci] || !!q;
@@ -2905,9 +2940,10 @@
             const row=document.createElement("div");row.className="refcmd";
             row.innerHTML=`<div class="rdesc">${esc(c.desc)}</div>
               <pre class="code"><button class="copy">copy</button><code>${hlComments(c.cmd)}</code></pre>
-              ${c.parts?`<div class="rparts">${c.parts}</div>`:""}
+              ${editableParts?'<div class="rpartsbox"></div>':(c.parts?`<div class="rparts">${c.parts}</div>`:"")}
               <div class="rusernote"></div>`;
             row.querySelector(".copy").addEventListener("click",e=>{e.stopPropagation();copy(row.querySelector("code").innerText,e.target);});
+            if(editableParts)renderParts(row.querySelector(".rpartsbox"),tabKey+"-parts::"+c.cmd,c.parts||"");
             renderUserNote(row.querySelector(".rusernote"),key);
             body.appendChild(row);
           });
@@ -2942,7 +2978,8 @@
     "#terraformView", TERRAFORM_REF_DATA,
     "Every <b style=\"color:var(--kube)\">terraform</b> command, full lifecycle — init through destroy, plus state management, workspaces, import, testing, and debugging. Real example values throughout (e.g. <b style=\"color:var(--kube)\">terraform-gke-learning</b>, <b style=\"color:var(--kube)\">google_container_cluster.primary</b>) — swap in your own resource names.",
     "Search terraform commands — e.g. state, workspace, plan, import…",
-    "terraform"
+    "terraform",
+    true
   );
   const renderCicdScripts=makeRefRenderer(
     "#cicdScriptsView", CICD_SCRIPTS_DATA,
