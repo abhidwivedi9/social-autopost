@@ -2811,7 +2811,8 @@
     for(const cat of CICD_SCRIPTS_DATA)for(const c of cat.commands){
       if(!c.prev)continue;
       const nk="cicd-scripts::"+c.cmd;
-      for(const p of c.prev){const ok="cicd-scripts::"+p;if(obj[ok]&&!obj[nk]){obj[nk]=obj[ok];moved=true;}}
+      for(const p of c.prev){const ok="cicd-scripts::"+p;if(obj[ok]&&!obj[nk]){obj[nk]=obj[ok];moved=true;}
+        const pk="cicd-scripts-parts::"+p,pn="cicd-scripts-parts::"+c.cmd;if(obj[pk]&&!obj[pn]){obj[pn]=obj[pk];moved=true;}}
     }
     return moved;
   }
@@ -2861,18 +2862,21 @@
 
   // Editable explanation line under a command (only for tabs that pass editableParts=true).
   // The built-in text stays in the data; an edit is stored in refEdits under tabKey+"-parts::"+cmd, so "reset" just deletes it.
+  function partsSavedHint(){toast(isOwner&&cloudReady?"Saved — synced to all your devices":"Saved on this device only — sign in with Google (top of page) to save for all devices");}
   function partsToText(h){const d=document.createElement("div");d.innerHTML=String(h||"").replace(/<br[^>]*>/gi,String.fromCharCode(10));return d.textContent;}
   function renderParts(container,key,defHtml){
     const edited=refEdits[key];
     if(refEditingKeys[key]){
       container.innerHTML=`<textarea class="runinput" placeholder="Explain this command in your own words…"></textarea>
         <div class="runactions"><button class="linkbtn" data-act="cancel">cancel</button><button class="btn sm primary" data-act="save">save</button></div>`;
-      container.querySelector(".runinput").value=edited!==undefined?edited:partsToText(defHtml);
+      const ta=container.querySelector(".runinput");
+      ta.value=edited!==undefined?edited:partsToText(defHtml);
+      ta.style.height=Math.min(Math.max(ta.scrollHeight+4,56),480)+"px";
       container.querySelector('[data-act="save"]').addEventListener("click",()=>{
         const val=container.querySelector(".runinput").value.trim();
         if(val&&val!==partsToText(defHtml).trim())refEdits[key]=val;else delete refEdits[key];
         refEditingKeys[key]=false;
-        persistRefEdits();
+        persistRefEdits();partsSavedHint();
         renderParts(container,key,defHtml);
       });
       container.querySelector('[data-act="cancel"]').addEventListener("click",()=>{
@@ -2890,7 +2894,7 @@
     bar.innerHTML=`<button class="linkbtn" data-act="edit">✎ ${edited!==undefined||defHtml?"edit explanation":"add explanation"}</button>${edited!==undefined&&defHtml?'<button class="linkbtn" data-act="reset">↺ reset to original</button>':""}`;
     bar.querySelector('[data-act="edit"]').addEventListener("click",()=>{refEditingKeys[key]=true;renderParts(container,key,defHtml);});
     const rb=bar.querySelector('[data-act="reset"]');
-    if(rb)rb.addEventListener("click",()=>{delete refEdits[key];persistRefEdits();renderParts(container,key,defHtml);});
+    if(rb)rb.addEventListener("click",()=>{delete refEdits[key];persistRefEdits();partsSavedHint();renderParts(container,key,defHtml);});
     container.appendChild(bar);
   }
 
@@ -2960,19 +2964,22 @@
     "#refView", GKE_REF_DATA,
     "Every <b style=\"color:var(--kube)\">gcloud</b> command for managing GKE as infrastructure — clusters, node pools, IAM & Workload Identity, Artifact Registry, VPC/firewall, and project-level access. Real example values throughout (e.g. <b style=\"color:var(--kube)\">terraform-gke-cluster</b>, <b style=\"color:var(--kube)\">asia-south1</b>) — swap in your own names.",
     "Search gcloud commands — e.g. resize, upgrade, node pool…",
-    "gke"
+    "gke",
+    true
   );
   const renderKubectlRef=makeRefRenderer(
     "#kubectlView", KUBECTL_REF_DATA,
     "Every <b style=\"color:var(--kube)\">kubectl</b> command for operating workloads inside an existing cluster — from context setup through cleanup. Real example values throughout (e.g. <b style=\"color:var(--kube)\">web</b>, <b style=\"color:var(--kube)\">drill</b>, <b style=\"color:var(--kube)\">nginx:alpine</b>) — swap in your own names.",
     "Search kubectl commands — e.g. rollback, logs, scale, secret…",
-    "kubectl"
+    "kubectl",
+    true
   );
   const renderHelmRef=makeRefRenderer(
     "#helmView", HELM_REF_DATA,
     "<b style=\"color:var(--kube)\">Helm</b> from zero to production, <b style=\"color:var(--kube)\">in order</b>: first commands → repositories → install and inspect → values → upgrade and rollback → build your own chart → dependencies, hooks and schemas → production and troubleshooting. Every entry has a <b style=\"color:var(--kube)\">scenario</b> (why you would run it), a command you can copy, and what to watch out for. The commands were run on a real cluster, so they work as written. Practise with a free local cluster (kind or Docker Desktop) in a throwaway namespace named <b style=\"color:var(--kube)\">helm-lab</b>. Every entry has an <b style=\"color:var(--kube)\">add your notes</b> box.",
     "Search Helm commands — e.g. upgrade, rollback, atomic, values, hooks…",
-    "helm"
+    "helm",
+    true
   );
   const renderTerraformRef=makeRefRenderer(
     "#terraformView", TERRAFORM_REF_DATA,
@@ -2985,26 +2992,30 @@
     "#cicdScriptsView", CICD_SCRIPTS_DATA,
     "50 real interview scenarios, ordered <b style=\"color:var(--kube)\">easy → hard</b> — each one is an actual incident/ask an interviewer would give you, followed by a working solution script. Every scenario builds on the state left by the previous one (same team, same pipeline, evolving), so read them in order. Covers every major deployment strategy including 3 blue-green variations (Service cutover, schema migrations, DNS-level) plus canary, A/B testing, and shadow traffic — and real multi-stage/multi-service examples (4-stage promotion, cross-repo orchestrated releases). Written as GitHub Actions YAML with real example values (<b style=\"color:var(--kube)\">terraform-gke-cluster</b>, <b style=\"color:var(--kube)\">web-repo</b>) — the same reasoning applies directly to Jenkins/GitLab CI, just different syntax.",
     "Search scripts — e.g. canary, rollback, matrix, secrets…",
-    "cicd-scripts"
+    "cicd-scripts",
+    true
   );
 
   const renderPipesVm=makeRefRenderer(
     "#pipesVmView", PIPES_VM_DATA,
     "<b style=\"color:var(--kube)\">VM pipelines</b> run through <b style=\"color:var(--kube)\">Harness SSH deployments</b>. Start with the <b style=\"color:var(--kube)\">Learning path</b>: 5 pipelines from easiest to advanced, explained in plain English (health check → deploy → rolling deploy → automatic rollback → UAT-to-production with approval). Below it are the real pipelines from work (stop, start, restart) with e-mail notifications, per-service conditions and log-watching health checks. Names are generalised. Every pipeline has an <b style=\"color:var(--kube)\">add your notes</b> box.",
     "Search VM pipelines — e.g. rolling, rollback, approval, health, stop, start…",
-    "pipes-vm"
+    "pipes-vm",
+    true
   );
   const renderPipesCluster=makeRefRenderer(
     "#pipesClusterView", PIPES_CLUSTER_DATA,
     "<b style=\"color:var(--kube)\">Cluster pipelines</b>. Start with the <b style=\"color:var(--kube)\">Learning path</b>: 5 <b style=\"color:var(--kube)\">GitLab CI</b> pipelines from easiest to advanced, explained in plain English (restart button → scale form → Helm deploy that undoes itself → dev/staging/production promotion → careful production release with smoke test and rollback). Below it are the real Harness template pipelines (scale, restart pods) and the GitLab ops dashboard. Names are generalised. Each entry has an <b style=\"color:var(--kube)\">add your notes</b> box.",
     "Search cluster pipelines — e.g. restart, scale, helm, atomic, promote, smoke…",
-    "pipes-cluster"
+    "pipes-cluster",
+    true
   );
   const renderPipesGcp=makeRefRenderer(
     "#pipesGcpView", PIPES_GCP_DATA,
     "<b style=\"color:var(--kube)\">Google Cloud and Terraform pipelines</b> in GitLab CI. Read the one-time setup first (how GitLab logs in to Google with <b style=\"color:var(--kube)\">no password and no key file</b>), then follow the <b style=\"color:var(--kube)\">Learning path</b>: keyless login → fmt and validate → plan on the merge request → plan, approve, apply the same plan → multi-environment with destroy guard and drift check. Each entry explains the problem and every line in plain English. Each entry has an <b style=\"color:var(--kube)\">add your notes</b> box.",
     "Search GCP pipelines — e.g. terraform, plan, apply, drift, workload identity…",
-    "pipes-gcp"
+    "pipes-gcp",
+    true
   );
 
   // ============ MY NOTES (separate scratchpad, own storage key) ============
