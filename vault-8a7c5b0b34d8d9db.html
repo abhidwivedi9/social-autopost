@@ -434,8 +434,12 @@
   const OWNER_EMAIL="abhidwivedi9@gmail.com";
   let db=null, cloudReady=false, isOwner=false, cloudSyncStarted=false;
   function syncPush(path,val){
-    if(!db||!cloudReady||!isOwner)return;
-    try{db.ref(path).set(JSON.stringify(val));}catch(e){}
+    if(!db||!cloudReady||!isOwner)return null;
+    try{
+      const p=db.ref(path).set(JSON.stringify(val));
+      if(p&&p.catch)p.catch(e=>{toast("Cloud save FAILED ("+path.replace("vault/","")+"): "+(e&&e.code?e.code:e));});
+      return p;
+    }catch(e){return null;}
   }
   function updateAuthButton(){
     const btn=document.getElementById("ownerAuthBtn");
@@ -456,8 +460,8 @@
       isOwner=!!(user && user.email===OWNER_EMAIL);
       updateAuthButton();
       if(user) startCloudSync();
+      else firebase.auth().signInAnonymously().catch(()=>{});
     });
-    firebase.auth().signInAnonymously().catch(()=>{});
   }catch(e){
     const s=document.getElementById("syncStatus");
     if(s){s.textContent="○ sync unavailable — local only on this device";s.className="sub sync-off";}
@@ -2802,7 +2806,7 @@
   function persistRefEdits(){
     try{localStorage.setItem(REFEDITS_LS_KEY,JSON.stringify(refEdits));}
     catch(e){toast("Can't save in preview — download the file to enable saving");}
-    syncPush("vault/refEditsJson",refEdits);
+    return syncPush("vault/refEditsJson",refEdits);
   }
   let refEdits=loadRefEdits();
   // corrected CI/CD scripts keep their old text in .prev — copy any note from the old key to the new one (old key is kept)
@@ -2862,7 +2866,10 @@
 
   // Editable explanation line under a command (only for tabs that pass editableParts=true).
   // The built-in text stays in the data; an edit is stored in refEdits under tabKey+"-parts::"+cmd, so "reset" just deletes it.
-  function partsSavedHint(){toast(isOwner&&cloudReady?"Saved — synced to all your devices":"Saved on this device only — sign in with Google (top of page) to save for all devices");}
+  function partsSavedHint(p){
+    if(isOwner&&cloudReady&&p&&p.then){toast("Saving to the cloud…");p.then(()=>toast("Saved to the cloud ✓ — visible on all your devices"),()=>{});}
+    else toast("NOT saved to the cloud — you are signed out. Click Sign in with Google (top of page), then save again.");
+  }
   function partsToText(h){const d=document.createElement("div");d.innerHTML=String(h||"").replace(/<br[^>]*>/gi,String.fromCharCode(10));return d.textContent;}
   function renderParts(container,key,defHtml){
     const edited=refEdits[key];
@@ -2876,7 +2883,7 @@
         const val=container.querySelector(".runinput").value.trim();
         if(val&&val!==partsToText(defHtml).trim())refEdits[key]=val;else delete refEdits[key];
         refEditingKeys[key]=false;
-        persistRefEdits();partsSavedHint();
+        partsSavedHint(persistRefEdits());
         renderParts(container,key,defHtml);
       });
       container.querySelector('[data-act="cancel"]').addEventListener("click",()=>{
@@ -2894,7 +2901,7 @@
     bar.innerHTML=`<button class="linkbtn" data-act="edit">✎ ${edited!==undefined||defHtml?"edit explanation":"add explanation"}</button>${edited!==undefined&&defHtml?'<button class="linkbtn" data-act="reset">↺ reset to original</button>':""}`;
     bar.querySelector('[data-act="edit"]').addEventListener("click",()=>{refEditingKeys[key]=true;renderParts(container,key,defHtml);});
     const rb=bar.querySelector('[data-act="reset"]');
-    if(rb)rb.addEventListener("click",()=>{delete refEdits[key];persistRefEdits();partsSavedHint();renderParts(container,key,defHtml);});
+    if(rb)rb.addEventListener("click",()=>{delete refEdits[key];partsSavedHint(persistRefEdits());renderParts(container,key,defHtml);});
     container.appendChild(bar);
   }
 
